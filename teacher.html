@@ -42,7 +42,7 @@ table{width:100%;border-collapse:collapse}td,th{padding:6px;border-bottom:1px so
 <header><b>EUNOIA</b> 원서 워크북 · 선생님</header>
 <main id="app"></main>
 <script>
-const API = "";  // ← index.html과 같은 Apps Script 웹 앱 URL
+const API = "https://script.google.com/macros/s/AKfycbz5yV1gPIesIaK0h2QCHeAn79V2wGRBdSQc2JUzHs0Wh_o2se_xcnmzaE20QNkC8UiQ/exec";  // ← index.html과 같은 Apps Script 웹 앱 URL
 let PW = ''; try { PW = sessionStorage.getItem('wb_pw') || ''; } catch (e) {}
 let tab = 'pending', essays = [];
 const $ = s => document.querySelector(s), app = $('#app');
