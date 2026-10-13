@@ -1,0 +1,228 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>원서 워크북 - 선생님</title>
+<style>
+:root{--p:#7B5EA7;--pd:#4A3568;--g:#C9A84C;--bg:#f6f3fa}
+*{box-sizing:border-box}
+body{margin:0;font-family:-apple-system,"Malgun Gothic",sans-serif;background:var(--bg);color:#2b2338}
+header{background:var(--pd);color:#fff;padding:12px 16px}header b{color:var(--g)}
+main{max-width:860px;margin:0 auto;padding:16px}
+.card{background:#fff;border-radius:12px;padding:16px;margin-bottom:12px;box-shadow:0 1px 4px #0001}
+button{font:inherit;border:0;border-radius:8px;padding:8px 14px;background:var(--p);color:#fff;cursor:pointer}
+button.sec{background:#e6dff1;color:var(--pd)}button.gold{background:var(--g);color:#2b2338}
+input,textarea{width:100%;font:inherit;padding:8px;border:1px solid #cfc5e0;border-radius:8px}
+textarea{min-height:60px}
+.muted{color:#8a7fa0;font-size:14px}.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.tag{padding:2px 10px;border-radius:10px;font-size:12px;background:#f7d9d5}.tag.ok{background:#d8f0e2}
+.cor{border-left:4px solid var(--g);padding-left:10px;margin:10px 0}
+.essay{background:#faf8fd;padding:10px;border-radius:8px;white-space:pre-wrap}
+table{width:100%;border-collapse:collapse}td,th{padding:6px;border-bottom:1px solid #eee;text-align:left}
+/* 리포트(인쇄용) */
+#rpt{background:#fff;padding:18px 22px;border-radius:12px;color:#222}
+.rh{background:#7B5EA7;color:#fff;padding:10px 14px;display:flex;justify-content:space-between;align-items:baseline;border-bottom:4px solid #C9A84C}
+.rh i{opacity:.85;font-size:13px}
+.rbar{background:#C9A84C;color:#fff;font-weight:700;padding:5px 12px;margin:16px 0 8px;break-after:avoid}
+.stats{display:flex;gap:8px;flex-wrap:wrap;margin:12px 0}.stats div{flex:1;min-width:110px;border:1px solid #d9cfe9;border-radius:8px;padding:8px;text-align:center}.stats b{display:block;font-size:20px;color:#4A3568}
+.rt{font-size:13px}.rt th{background:#efe9f7;color:#4A3568}.rt td,.rt th{border:1px solid #ddd;padding:4px 6px}
+.chunk{display:inline-block;margin:2px 10px 6px 0;vertical-align:top;font-size:13px}.chunk .m{color:#555}.chunk .t{color:#2e8b57}
+.rfoot{margin-top:18px;font-size:12px;color:#7B5EA7;display:flex;justify-content:space-between;border-top:1px solid #C9A84C;padding-top:6px}
+.keep{break-inside:avoid}.pbreak{break-before:page}
+@media print{
+  @page{size:A4;margin:14mm}
+  body{background:#fff}header,.noprint{display:none!important}
+  main{max-width:none;padding:0}#rpt{padding:0;border-radius:0}
+  *{-webkit-print-color-adjust:exact;print-color-adjust:exact}
+}
+</style>
+</head>
+<body>
+<header><b>EUNOIA</b> 원서 워크북 · 선생님</header>
+<main id="app"></main>
+<script>
+const API = "";  // ← index.html과 같은 Apps Script 웹 앱 URL
+let PW = ''; try { PW = sessionStorage.getItem('wb_pw') || ''; } catch (e) {}
+let tab = 'pending', essays = [];
+const $ = s => document.querySelector(s), app = $('#app');
+const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+async function api(action, p = {}) {
+  if (!API) throw new Error('API 주소 미설정');
+  const r = await fetch(API, { method: 'POST', headers: { 'Content-Type': 'text/plain' }, body: JSON.stringify({ action, pw: PW, ...p }) });
+  const j = await r.json(); if (j.error) throw new Error(j.error); return j;
+}
+function login(msg = '') {
+  app.innerHTML = `<div class="card"><h3>선생님 비밀번호</h3><input type="password" id="pw"><p class="muted">${esc(msg)}</p><button id="go">들어가기</button></div>`;
+  $('#go').onclick = async () => { PW = $('#pw').value; try { await api('tStudents'); try { sessionStorage.setItem('wb_pw', PW); } catch (e) {} view(); } catch (e) { login(e.message === 'bad_password' ? '비밀번호가 틀렸어요' : e.message); } };
+}
+async function view() {
+  app.innerHTML = `<div class="row" style="margin-bottom:12px"><button class="${tab === 'pending' ? '' : 'sec'}" data-t="pending">첨삭 대기</button><button class="${tab === 'approved' ? '' : 'sec'}" data-t="approved">승인 완료</button><button class="${tab === 'students' ? '' : 'sec'}" data-t="students">학생 현황 · 주간 요약</button><button class="${tab === 'report' ? '' : 'sec'}" data-t="report">🖨 리포트 인쇄</button></div><div id="body">불러오는 중...</div>`;
+  app.querySelectorAll('[data-t]').forEach(b => b.onclick = () => { tab = b.dataset.t; view(); });
+  try {
+    if (tab === 'students') {
+      const r = await api('tStudents');
+      const rate = s => (s.reviewOk + s.reviewNo) ? Math.round(s.reviewOk / (s.reviewOk + s.reviewNo) * 100) + '%' : '—';
+      $('#body').innerHTML = `<div class="card" style="overflow-x:auto"><table><tr><th>이름 (누르면 상세)</th><th>이번 주 회차</th><th>이번 주 새 단어</th><th>복습 정답률</th><th>자주 놓친 단어</th><th>첨삭 지적</th><th>최근 지적 이유</th><th>전체 회차(완료)</th><th>마지막 저장</th></tr>${r.students.map(s => `<tr><td><a href="#" data-st="${esc(s.name)}">${esc(s.name)}</a></td><td>${s.weekSessions}</td><td>${s.weekWords}</td><td>${rate(s)}</td><td>${esc((s.missWords || []).join(', ') || '—')}</td><td>${s.corrections}</td><td class="muted">${esc((s.reasons || []).join(' / ') || '—')}</td><td>${s.sessions}(${s.finished})</td><td class="muted">${esc(String(s.updated).slice(0, 16))}</td></tr>`).join('')}</table></div><div id="detail"></div>`;
+      document.querySelectorAll('[data-st]').forEach(a => a.onclick = async ev => {
+        ev.preventDefault(); $('#detail').innerHTML = '불러오는 중...';
+        try { const d = await api('tStudent', { name: a.dataset.st }); $('#detail').innerHTML = detail(a.dataset.st, d.data, d.models || {}); bindDetail(a.dataset.st); }
+        catch (e) { $('#detail').textContent = '오류: ' + e.message; }
+      });
+    } else if (tab === 'report') {
+      await viewReport();
+    } else {
+      essays = (await api('tEssays')).essays;
+      const list = essays.filter(e => e.status === tab);
+      const todo = tab === 'pending' ? list.filter(e => !e.final && !(e.ai && (e.ai.corrections || e.ai.error))) : [];
+      $('#body').innerHTML = (todo.length ? `<div class="card row"><button class="gold" id="batch">AI 초안 일괄 생성 (${todo.length}건)</button><span class="muted" id="bmsg">한 건씩 차례로 처리해요. 창을 닫지 마세요.</span></div>` : '')
+        + (list.length ? list.map(card).join('') : '<p class="muted">없어요.</p>');
+      bind();
+      if (todo.length) $('#batch').onclick = async () => {
+        $('#batch').disabled = true; let fail = 0;
+        for (let i = 0; i < todo.length; i++) {
+          $('#bmsg').textContent = `처리 중 ${i + 1}/${todo.length} (${todo[i].name})`;
+          try { await api('tRegrade', { id: todo[i].id }); } catch (e) { fail++; }
+        }
+        $('#bmsg').textContent = fail ? `완료 (실패 ${fail}건 — 카드에서 다시 눌러 보세요)` : '모두 완료!'; await new Promise(r => setTimeout(r, 1200)); view();
+      };
+    }
+  } catch (e) { if (e.message === 'bad_password') login(); else $('#body').textContent = '오류: ' + e.message; }
+}
+// 학생이 쓴 영어 순서 뜻(직독직해)과 단어 뜻
+function chunksOf(raw) {
+  if (raw.includes('/')) return raw.split('/').map(c => c.trim()).filter(Boolean);
+  const w = raw.split(/\s+/), out = []; let i = 0;
+  while (i < w.length) { const left = w.length - i, n = left === 4 ? 2 : left <= 3 ? left : 3; out.push(w.slice(i, i + n).join(' ')); i += n; }
+  return out;
+}
+// 학생 상세: 직독직해 + 선생님 모범(입력하면 학생 '내 기록 보기'에 나란히 공개), 단어, 복습 결과
+function detail(name, d, models = {}) {
+  if (!d || !d.sessions) return '<div class="card">데이터가 없어요.</div>';
+  return `<div class="card"><h3>${esc(name)}</h3>${d.sessions.slice().reverse().map(s => { const mm = models[s.n] || {}; return `<h4>${s.n}회차 · ${esc(s.date)}</h4>
+    ${(s.sentences || []).map((sent, i) => `<div class="cor">${chunksOf(sent).map((c, j) => { const k = i + '_' + j; return `<span style="display:inline-block;margin:2px 10px 6px 0;width:${Math.max(130, c.length * 9)}px;vertical-align:top"><b>${esc(c)}</b><br><span class="muted">${esc((s.chunkMeans || {})[k] || '—')}</span>
+      <input data-m="${s.n}" data-k="${k}" value="${esc(mm[k] || '')}" placeholder="모범 뜻" style="padding:4px;margin-top:2px"></span>`; }).join('')}</div>`).join('')}
+    ${(s.sentences || []).length ? `<button class="sec" data-sm="${s.n}">모범 직독직해 저장 (학생에게 공개)</button>` : ''}
+    ${(s.unknown || []).length ? `<p><b>모르는 단어</b> ${(s.unknown).map(u => `${esc(u.word)} <span class="muted">(짐작: ${esc(u.guess || '—')} → 찾은 뜻: ${esc(u.myMeaning || '—')}${u.rv ? ` · 복습 ✅${u.rv.ok} ❌${u.rv.no}` : ''})</span>`).join(', ')}</p>` : ''}`; }).join('')}</div>`;
+}
+function bindDetail(name) {
+  $('#detail').onclick = async ev => {
+    const b = ev.target; if (!b.dataset.sm) return;
+    const n = b.dataset.sm, means = {};
+    $('#detail').querySelectorAll(`input[data-m="${n}"]`).forEach(i => { if (i.value.trim()) means[i.dataset.k] = i.value.trim(); });
+    b.textContent = '저장 중...';
+    try { await api('tModel', { name, n: +n, means }); b.textContent = '✅ 저장됨'; } catch (e) { b.textContent = '실패: ' + e.message; }
+  };
+}
+/* ---------- 리포트 (인쇄 / PDF 저장) ---------- */
+const nameOf = k => String(k).split('#')[0];
+const fmtD = ms => new Date(ms).toLocaleDateString('ko-KR');
+// 회차 목록 → 통계 (회차 수, 완료, 단어, 복습 정답/오답, 자주 놓친 단어)
+function calc(sessions) {
+  const r = { n: sessions.length, fin: 0, words: 0, ok: 0, no: 0, miss: [] };
+  sessions.forEach(s => {
+    if (s.finished) r.fin++;
+    (s.unknown || []).forEach(u => { r.words++; if (u.rv) { r.ok += u.rv.ok || 0; r.no += u.rv.no || 0; if (u.rv.no) r.miss.push([u.word, u.rv.no]); } });
+  });
+  r.miss = r.miss.sort((a, b) => b[1] - a[1]).slice(0, 5).map(m => `${m[0]}(${m[1]})`);
+  r.rate = (r.ok + r.no) ? Math.round(r.ok / (r.ok + r.no) * 100) + '%' : '—';
+  return r;
+}
+async function viewReport() {
+  const [st, es] = await Promise.all([api('tStudents'), api('tEssays')]);
+  const students = st.students, allEssays = es.essays, cache = {};
+  $('#body').innerHTML = `<div class="card noprint"><div class="row">
+    <select id="rsel" style="width:auto;padding:8px;border-radius:8px"><option value="">전체 학생 요약표</option>${students.map(s => `<option value="${esc(s.name)}">${esc(s.name)}</option>`).join('')}</select>
+    <select id="rrange" style="width:auto;padding:8px;border-radius:8px"><option value="4w">최근 4주</option><option value="1w">최근 7일</option><option value="n">회차 범위</option><option value="all">전체 기간</option></select>
+    <span id="rn" style="display:none">회차 <input id="rfrom" type="number" min="1" value="1" style="width:60px;display:inline-block"> ~ <input id="rto" type="number" min="1" value="3" style="width:60px;display:inline-block"></span></div>
+    <div class="row" style="margin-top:8px">
+    <label><input type="checkbox" id="o1" checked style="width:auto"> 직독직해</label>
+    <label><input type="checkbox" id="o2" checked style="width:auto"> 단어·복습</label>
+    <label><input type="checkbox" id="o3" checked style="width:auto"> 영작·첨삭</label>
+    <button id="rprint">🖨 인쇄 / PDF 저장</button></div>
+    <p class="muted">인쇄 창에서 프린터를 <b>'PDF로 저장'</b>으로 고르면 파일로 저장돼요. 첨삭은 <b>승인한 것만</b> 나가고, 승인 전 AI 초안은 포함되지 않아요. 기간은 학생이 회차를 시작한 날짜 기준이에요.</p></div><div id="rpt"></div>`;
+  const range = () => {
+    const v = $('#rrange').value, now = Date.now();
+    if (v === 'all') return { fn: () => true, label: '전체 기간' };
+    if (v === 'n') { const a = +$('#rfrom').value || 1, b = +$('#rto').value || 9999; return { fn: s => s.n >= a && s.n <= b, label: `${a}~${b}회차` }; }
+    const days = v === '1w' ? 7 : 28;
+    return { fn: s => s.ts && s.ts > now - days * 864e5, label: `${fmtD(now - days * 864e5)} ~ ${fmtD(now)}` };
+  };
+  const frame = (inner, label) => `<div class="rh"><b>유노이아 영어국어학원 | EUNOIA ENGLISH &amp; KOREAN</b><i>언어는 존재의 집이다.</i></div>${inner.replace('@@RANGE@@', esc(label))}
+    <div class="rfoot"><i>생각을 키우는 언어의 힘</i><span>${fmtD(Date.now())} 출력</span><span>유노이아 영어국어학원</span></div>`;
+  const draw = async () => {
+    const who = $('#rsel').value, host = $('#rpt'), R = range();
+    $('#rn').style.display = $('#rrange').value === 'n' ? 'inline' : 'none';
+    if (!who) {
+      host.innerHTML = frame(`<h2 style="color:#4A3568;margin-bottom:2px">원서 워크북 학습 현황 요약</h2><div class="muted" style="margin-bottom:8px">기간: @@RANGE@@</div><table class="rt"><tr><th>이름</th><th>회차(완료)</th><th>새 단어</th><th>복습 정답률</th><th>자주 놓친 단어</th></tr>
+        ${students.map(s => { const c = calc((s.sess || []).filter(R.fn)); return `<tr><td>${esc(nameOf(s.name))}</td><td>${c.n}(${c.fin})</td><td>${c.words}</td><td>${c.rate}</td><td>${esc(c.miss.join(', ') || '—')}</td></tr>`; }).join('')}</table>`, R.label);
+      return;
+    }
+    host.innerHTML = '불러오는 중...';
+    if (!cache[who]) cache[who] = await api('tStudent', { name: who });
+    const d = cache[who].data || { sessions: [] }, mm = cache[who].models || {};
+    const sess = (d.sessions || []).filter(R.fn), c = calc(sess), nset = new Set(sess.map(s => String(s.n)));
+    const o1 = $('#o1').checked, o2 = $('#o2').checked, o3 = $('#o3').checked;
+    const mine = allEssays.filter(e => e.name === who && nset.has(String(e.sessionNo)));
+    const corr = mine.reduce((a, e) => a + (e.status === 'approved' && e.final ? (e.final.corrections || []).length : 0), 0);
+    let h = `<h2 style="color:#4A3568;margin:14px 0 0">${esc(nameOf(who))} · 원서 워크북 학습 리포트</h2><div class="muted">기간: @@RANGE@@</div>
+      <div class="stats keep"><div><b>${c.n}</b>회차 (완료 ${c.fin})</div><div><b>${c.words}</b>모르는 단어</div><div><b>${c.rate}</b>복습 정답률</div><div><b>${corr}</b>첨삭 지적(승인분)</div></div>
+      ${c.miss.length ? `<p class="keep"><b>자주 놓친 단어</b> ${esc(c.miss.join(', '))}</p>` : ''}${sess.length ? '' : '<p class="muted">이 기간에 학습 기록이 없어요.</p>'}`;
+    sess.slice().reverse().forEach(ss => {
+      h += `<div class="rbar">▶ ${ss.n}회차 · ${esc(ss.date || '')}</div>`;
+      if (o1 && (ss.sentences || []).length) h += (ss.sentences).map((sent, i) => `<div class="keep">${chunksOf(sent).map((ck, j) => { const k = i + '_' + j; return `<span class="chunk"><b>${esc(ck)}</b><br><span class="m">${esc((ss.chunkMeans || {})[k] || '—')}</span>${(mm[ss.n] || {})[k] ? `<br><span class="t">모범: ${esc(mm[ss.n][k])}</span>` : ''}</span>`; }).join('')}</div>`).join('');
+      if (o2 && (ss.unknown || []).length) h += `<table class="rt keep" style="margin-top:6px"><tr><th>단어</th><th>짐작한 뜻</th><th>찾은 뜻</th><th>복습</th></tr>${ss.unknown.map(u => `<tr><td><b>${esc(u.word)}</b></td><td>${esc(u.guess || '—')}</td><td>${esc(u.myMeaning || '—')}</td><td>${u.rv ? `✅${u.rv.ok} ❌${u.rv.no}` : '—'}</td></tr>`).join('')}</table>`;
+      if (o3) mine.filter(e => String(e.sessionNo) === String(ss.n)).forEach(e => {
+        const fb = e.status === 'approved' ? e.final : null;
+        h += `<div class="keep" style="margin-top:8px"><b>${e.kind === 'words' ? '단어 영작' : '영작문'}</b> ${fb ? '' : '<span class="muted">(첨삭 대기 중)</span>'}
+          <div style="white-space:pre-wrap;background:#faf8fd;padding:6px 8px;border-radius:6px;font-size:13px">${esc(e.text)}</div>
+          ${fb ? `${(fb.corrections || []).map(x => `<div style="font-size:13px;margin:4px 0"><span style="background:#f7d9d5">${esc(x.original)}</span> → <span style="background:#d8f0e2">${esc(x.corrected)}</span><br><span class="muted">${esc(x.reason)}</span></div>`).join('')}
+            ${fb.praise ? `<div style="font-size:13px">👍 ${esc(fb.praise)}</div>` : ''}${fb.comment ? `<div style="font-size:13px">💬 ${esc(fb.comment)}</div>` : ''}` : ''}
+          ${(e.revised || []).length ? `<div style="font-size:13px;margin-top:4px"><b>학생 고쳐쓰기</b>${e.revised.map(r => `<div>✍️ ${esc(r.re)} <span class="muted">— ${esc(r.why)}</span></div>`).join('')}</div>` : ''}</div>`;
+      });
+    });
+    host.innerHTML = frame(h, R.label);
+  };
+  ['rsel', 'rrange', 'rfrom', 'rto', 'o1', 'o2', 'o3'].forEach(i => $('#' + i).onchange = draw);
+  $('#rprint').onclick = () => window.print();
+  draw();
+}
+
+function corRow(c = {}) {
+  return `<div class="cor"><input data-f="original" placeholder="원문" value="${esc(c.original)}"><input data-f="corrected" placeholder="수정문" value="${esc(c.corrected)}" style="margin-top:4px"><input data-f="reason" placeholder="이유(한국어)" value="${esc(c.reason)}" style="margin-top:4px"><button class="sec" data-del style="margin-top:4px">삭제</button></div>`;
+}
+function card(e) {
+  const fb = e.final || e.ai || {};
+  const hasAi = !!(e.ai && (e.ai.corrections || e.ai.error));
+  return `<div class="card" data-id="${e.id}"><div class="row" style="justify-content:space-between"><b>${esc(e.name)} · ${e.sessionNo}회차 · ${e.kind === 'words' ? '단어 영작' : '영작문'}</b>
+    <span class="tag ${e.status === 'approved' ? 'ok' : ''}">${e.status === 'approved' ? '승인됨' : '대기'}${e.revised && e.revised.length ? ' · 학생 고쳐쓰기 완료' : ''}</span></div>
+    <p class="muted">${esc(e.prompt)}</p><div class="essay">${esc(e.text)}</div>
+    ${fb.error ? `<p style="color:#c0392b">AI 첨삭 실패: ${esc(fb.error)} (AI 재첨삭을 눌러 보세요)</p>` : ''}
+    <h4>첨삭 (선생님 전용 — AI 초안을 고친 뒤 승인하면 학생에게 공개)</h4><div class="cors">${(fb.corrections || []).map(corRow).join('')}</div>
+    <button class="sec" data-add>+ 항목 추가</button>
+    <p>칭찬</p><textarea data-g="praise">${esc(fb.praise)}</textarea><p>코멘트</p><textarea data-g="comment">${esc(fb.comment)}</textarea>
+    ${e.revised && e.revised.length ? `<h4>학생이 고쳐 쓴 내용</h4>${e.revised.map(r => `<div class="cor"><div class="muted">${esc(r.original)} → ${esc(r.corrected)}</div><div>✍️ ${esc(r.re)}</div><div>💬 ${esc(r.why)}</div></div>`).join('')}` : ''}
+    <div class="row" style="margin-top:10px"><button class="gold" data-ok>${e.status === 'approved' ? '수정 내용 다시 저장' : '승인 (학생에게 공개)'}</button><button class="${hasAi || e.final ? 'sec' : 'gold'}" data-re>${hasAi ? 'AI 재첨삭' : 'AI 첨삭 초안 만들기'}</button><span class="muted" data-msg></span></div></div>`;
+}
+function collect(el) {
+  return {
+    corrections: [...el.querySelectorAll('.cor')].map(c => ({ original: c.querySelector('[data-f=original]').value, corrected: c.querySelector('[data-f=corrected]').value, reason: c.querySelector('[data-f=reason]').value })).filter(c => c.original || c.corrected),
+    praise: el.querySelector('[data-g=praise]').value, comment: el.querySelector('[data-g=comment]').value
+  };
+}
+function bind() {
+  document.querySelectorAll('.card[data-id]').forEach(el => {
+    const id = el.dataset.id, msg = t => el.querySelector('[data-msg]').textContent = t;
+    el.onclick = async ev => {
+      const b = ev.target;
+      if (b.dataset.del !== undefined) b.closest('.cor').remove();
+      if (b.dataset.add !== undefined) el.querySelector('.cors').insertAdjacentHTML('beforeend', corRow());
+      if (b.dataset.ok !== undefined) { msg('저장 중...'); try { await api('tApprove', { id, final: collect(el) }); msg('✅ 승인됨'); } catch (e) { msg('실패: ' + e.message); } }
+      if (b.dataset.re !== undefined) { msg('AI 재첨삭 중...'); try { const r = await api('tRegrade', { id }); const e = essays.find(x => x.id === id); e.ai = r.ai; e.final = null; el.outerHTML = card(e); bind(); } catch (e) { msg('실패: ' + e.message); } }
+    };
+  });
+}
+PW ? view() : login();
+</script>
+</body>
+</html>

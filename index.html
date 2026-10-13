@@ -1,0 +1,427 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>원서 워크북</title>
+<style>
+:root{--p:#7B5EA7;--pd:#4A3568;--g:#C9A84C;--bg:#f6f3fa;--ok:#2e8b57;--bad:#c0392b}
+*{box-sizing:border-box}
+body{margin:0;font-family:-apple-system,"Malgun Gothic",sans-serif;background:var(--bg);color:#2b2338}
+header{background:var(--pd);color:#fff;padding:12px 16px;display:flex;justify-content:space-between;align-items:center}
+header b{color:var(--g)}
+main{max-width:720px;margin:0 auto;padding:16px}
+.card{background:#fff;border-radius:12px;padding:16px;margin-bottom:12px;box-shadow:0 1px 4px #0001}
+h2{margin:0 0 12px;color:var(--pd)}
+button{font:inherit;border:0;border-radius:8px;padding:10px 16px;background:var(--p);color:#fff;cursor:pointer}
+button.sec{background:#e6dff1;color:var(--pd)}
+button.gold{background:var(--g);color:#2b2338}
+button:disabled{opacity:.4;cursor:default}
+input[type=text],textarea{width:100%;font:inherit;padding:10px;border:1px solid #cfc5e0;border-radius:8px}
+textarea{min-height:110px}
+.steps{display:flex;gap:4px;overflow-x:auto;margin-bottom:12px}
+.steps span{flex:none;padding:6px 10px;border-radius:14px;background:#e6dff1;font-size:13px;color:var(--pd)}
+.steps span.on{background:var(--p);color:#fff}.steps span.done{background:var(--g)}
+.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.tok{display:inline-block;margin:3px;padding:8px 12px;border:1px solid var(--p);border-radius:8px;background:#fff;cursor:pointer;user-select:none}
+.ans{min-height:56px;border:2px dashed var(--g);border-radius:10px;padding:6px;margin:10px 0}
+.w{cursor:pointer;padding:1px 2px;border-radius:4px}.w.sel{background:var(--g)}
+.good{color:var(--ok)}.bad{color:var(--bad)}.muted{color:#8a7fa0;font-size:14px}
+.opt{display:block;width:100%;text-align:left;margin:6px 0;background:#fff;color:#2b2338;border:1px solid var(--p)}
+.opt.right{background:#d8f0e2}.opt.wrong{background:#f7d9d5}
+.mark{background:#f7d9d5;padding:0 3px;border-radius:3px}.fix{background:#d8f0e2;padding:0 3px;border-radius:3px}
+.shake{animation:sh .3s}@keyframes sh{25%{transform:translateX(-6px)}75%{transform:translateX(6px)}}
+.badge{background:var(--bad);color:#fff;border-radius:10px;padding:1px 8px;font-size:12px}
+</style>
+</head>
+<body>
+<header><div><b>EUNOIA</b> 원서 워크북</div><div class="muted" style="color:#fff;text-align:right"><span id="who"></span><br><span id="sv" style="font-size:12px"></span></div></header>
+<main id="app"></main>
+
+<script>
+const API = "";  // ← Apps Script 웹 앱 URL을 여기에 넣는다 (CLAUDE.md의 배포 절차 참고)
+const ESSAY_EVERY = 3;
+
+let S = { name: '', sessions: [] };   // 학생 전체 데이터 (서버에도 저장)
+let essays = [];                      // 서버에서 받아온 영작문 현황
+let models = {};                      // 선생님이 입력한 모범 직독직해 { 회차: { '문장_덩어리': 뜻 } }
+let cur = null, stepId = null;
+const lsGet = k => { try { return localStorage.getItem(k); } catch (e) { return null; } };
+const lsSet = (k, v) => { try { localStorage.setItem(k, v); } catch (e) {} };
+const $ = s => document.querySelector(s);
+const app = $('#app');
+const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const shuffle = a => { a = a.slice(); for (let i = a.length - 1; i > 0; i--) { const j = Math.random() * (i + 1) | 0; [a[i], a[j]] = [a[j], a[i]]; } return a; };
+const normS = s => s.toLowerCase().replace(/[^a-z0-9' ]/g, '').replace(/\s+/g, ' ').trim();
+// 문장은 "He opened / the door / slowly." 처럼 / 로 의미 단위를 나눠 저장한다. / 가 없으면 2~3단어씩 자동으로 묶는다.
+function chunksOf(raw) {
+  if (raw.includes('/')) return raw.split('/').map(c => c.trim()).filter(Boolean);
+  const w = raw.split(/\s+/), out = []; let i = 0;
+  while (i < w.length) { const left = w.length - i, n = left === 4 ? 2 : left <= 3 ? left : 3; out.push(w.slice(i, i + n).join(' ')); i += n; }
+  return out;
+}
+const plain = raw => chunksOf(raw).join(' ');
+
+/* ---------- 서버 통신 ---------- */
+async function api(action, payload = {}) {
+  if (!API) throw new Error('API 주소가 설정되지 않았어요');
+  const r = await fetch(API, { method: 'POST', headers: { 'Content-Type': 'text/plain' }, body: JSON.stringify({ action, ...payload }) });
+  const j = await r.json();
+  if (j.error) throw new Error(j.error);
+  return j;
+}
+let saveT;
+const setSv = t => { const e = $('#sv'); if (e) e.textContent = t; };
+function save() {
+  S.updated = Date.now();
+  lsSet('wb_' + S.name, JSON.stringify(S));
+  setSv('저장 중…');
+  clearTimeout(saveT);
+  saveT = setTimeout(flush, 800);
+}
+async function flush() {
+  clearTimeout(saveT);
+  if (!S.name) return;
+  if (!API) { setSv('이 기기에만 저장돼요'); return; }
+  try { await api('save', { name: S.name, data: S }); setSv('✓ 저장됨'); }
+  catch (e) { setSv('⚠ 서버 저장 실패 — 이 기기에는 저장됐어요. 인터넷을 확인하세요'); }
+}
+document.addEventListener('visibilitychange', () => { if (document.hidden && S.name) flush(); });
+
+/* ---------- TTS (CLAUDE.md §4-4의 교훈 반영) ---------- */
+let voice = null;
+function pickVoice() { const v = speechSynthesis.getVoices(); voice = v.find(x => /en[-_]US/i.test(x.lang) && /female|samantha|google|zira|aria/i.test(x.name)) || v.find(x => /^en/i.test(x.lang)) || null; }
+if ('speechSynthesis' in window) { pickVoice(); speechSynthesis.onvoiceschanged = pickVoice; }
+function unlockAudio() { try { const u = new SpeechSynthesisUtterance(' '); u.volume = 0.01; speechSynthesis.speak(u); } catch (e) {} }
+function speak(text, rate = 0.9) {
+  if (!('speechSynthesis' in window)) return;
+  const go = () => { const u = new SpeechSynthesisUtterance(text); u.lang = 'en-US'; u.rate = rate; if (voice) u.voice = voice; speechSynthesis.speak(u); };
+  if (speechSynthesis.speaking || speechSynthesis.pending) { speechSynthesis.cancel(); setTimeout(go, 120); } else go();
+}
+
+/* ---------- 로그인 / 홈 ---------- */
+function viewLogin() {
+  $('#who').textContent = '';
+  let last = {}; try { last = JSON.parse(lsGet('wb_last')) || {}; } catch (e) {}
+  app.innerHTML = `<div class="card"><h2>누구예요?</h2>
+    <input type="text" id="nm" placeholder="이름" value="${esc(last.nm || '')}">
+    <input type="text" id="cd" placeholder="구분번호 (예: 반+번호, 또는 휴대폰 뒷 4자리)" value="${esc(last.cd || '')}" style="margin-top:8px">
+    <p class="muted">이름과 구분번호가 같으면 하던 곳부터 이어서 할 수 있어요. 같은 이름의 친구와 기록이 섞이지 않도록 꼭 입력해 주세요.</p>
+    <button id="go">시작하기</button><span id="msg" class="muted"></span></div>`;
+  $('#go').onclick = async () => {
+    unlockAudio();
+    const nm = $('#nm').value.trim(), cd = $('#cd').value.trim().replace(/[|#]/g, '');
+    if (!nm || cd.length < 2) { $('#msg').textContent = ' 이름과 구분번호(2자 이상)를 입력하세요'; return; }
+    const name = nm.replace(/[|#]/g, '') + '#' + cd;
+    $('#msg').textContent = ' 불러오는 중...';
+    let local = null; try { local = JSON.parse(lsGet('wb_' + name)); } catch (e) {}
+    S = local || { name, sessions: [] }; models = {};
+    try {
+      const r = await api('load', { name });
+      if (r.data && (r.data.updated || 0) >= (S.updated || 0)) S = r.data; // 더 최근에 저장된 쪽을 사용
+      essays = r.essays || []; models = r.models || {};
+    } catch (e) { $('#msg').textContent = ' (서버에 연결하지 못해 이 기기 데이터로 시작해요)'; await new Promise(r => setTimeout(r, 900)); }
+    S.name = name; S.display = nm; lsSet('wb_last', JSON.stringify({ nm, cd })); viewHome();
+  };
+}
+
+function pendingFixes() { return essays.filter(e => e.status === 'approved' && e.final && !e.revised && (e.final.corrections || []).length); }
+
+function viewHome() {
+  cur = null; $('#who').textContent = (S.display || S.name) + ' ';
+  const fixes = pendingFixes();
+  const n = S.sessions.length + 1;
+  app.innerHTML = `<div class="card"><h2>안녕, ${esc(S.display || S.name)}!</h2>
+    <button id="new">+ ${n}회차 시작하기${n % ESSAY_EVERY === 0 ? ' (영작문 있는 날 ✍️)' : ''}</button>
+    ${fixes.length ? `<p><button class="gold" id="fix">✏️ 선생님 첨삭 도착 <span class="badge">${fixes.length}</span></button></p>` : ''}
+    <button class="sec" id="out" style="margin-top:8px">다른 이름으로</button></div>
+    <div class="card"><h2>내 회차</h2>${S.sessions.length ? S.sessions.slice().reverse().map(s => `
+      <div class="row" style="justify-content:space-between;margin:6px 0"><span>${s.n}회차 · ${esc(s.date)} ${s.finished ? '✅' : '진행 중'} <span class="muted">(문장 ${s.sentences.length} · 단어 ${(s.unknown || []).length})</span></span>
+      <button class="sec" data-n="${s.n}">${s.finished ? '내 기록 보기' : '이어하기'}</button></div>`).join('') : '<p class="muted">아직 없어요. 첫 회차를 시작해볼까요?</p>'}</div>`;
+  $('#new').onclick = () => {
+    unlockAudio();
+    cur = { n, ts: Date.now(), date: new Date().toLocaleDateString('ko-KR'), sentences: [], unknown: [], wordSents: [], done: {}, finished: false };
+    cur.review = { items: pickReview(n), results: {} };
+    S.sessions.push(cur); save(); go(firstOpenStep());
+  };
+  $('#out').onclick = () => { S = { name: '', sessions: [] }; viewLogin(); };
+  if (fixes.length) $('#fix').onclick = () => { cur = null; stepId = 'revise'; renderRevise(essayItems(), () => viewHome()); };
+  app.querySelectorAll('button[data-n]').forEach(b => b.onclick = () => {
+    unlockAudio(); cur = S.sessions.find(s => s.n == b.dataset.n);
+    if (cur.finished) viewSession(cur); else go(firstOpenStep());
+  });
+}
+
+/* ---------- 단계 틀 ---------- */
+function stepList() {
+  const l = [...(cur.review && cur.review.items.length ? [['review', '복습']] : []), ['input', '문장 입력'], ['mark', '예습 단어'], ['listen', '듣고 따라하기'], ['chunk', '영어 순서 뜻쓰기'], ['scramble', '어순 배열'], ['write', '찾은 뜻 쓰기'], ['compose', '단어로 영작']];
+  if (cur.n % ESSAY_EVERY === 0) l.push(['essay', '영작문']);
+  l.push(['revise', '수정·이유']);
+  return l;
+}
+const firstOpenStep = () => (stepList().find(([id]) => !cur.done[id]) || ['input'])[0];
+function go(id) {
+  stepId = id; save();
+  const list = stepList();
+  const bar = `<div class="steps">${list.map(([k, t]) => `<span class="${k === id ? 'on' : cur.done[k] ? 'done' : ''}">${t}</span>`).join('')}</div>`;
+  app.innerHTML = bar + '<div id="step"></div>';
+  ({ review: stReview, input: stInput, listen: stListen, chunk: stChunk, scramble: stScramble, mark: stMark, write: stWrite, compose: stCompose, essay: stEssay, revise: stRevise })[id]();
+}
+function nextStep() {
+  cur.done[stepId] = true; save();
+  const l = stepList().map(x => x[0]); const i = l.indexOf(stepId);
+  if (i + 1 < l.length) go(l[i + 1]); else { cur.finished = true; save(); app.innerHTML = '<div class="card"><h2>🎉 이번 회차 끝!</h2><button id="h">홈으로</button></div>'; $('#h').onclick = viewHome; }
+}
+const nextBtn = (enabled = true, label = '다음 단계 →') => `<p><button id="nx" ${enabled ? '' : 'disabled'}>${label}</button></p>`;
+
+/* ---------- 0. 지난 회차 단어 복습 ---------- */
+// 지난 회차에서 모르는 단어로 표시하고 뜻까지 쓴 단어 중, 자주 틀렸거나 복습이 적은 것부터 최대 5개
+function pickReview(n) {
+  const pool = [];
+  S.sessions.forEach(s => {
+    if (s.n === n) return;
+    (s.unknown || []).forEach(u => { if ((u.myMeaning || '').trim()) pool.push({ n: s.n, word: u.word, sentence: u.sentence, meaning: u.myMeaning, score: ((u.rv && u.rv.no) || 0) - ((u.rv && u.rv.ok) || 0) }); });
+  });
+  return shuffle(pool).sort((a, b) => b.score - a.score).slice(0, 5).map(({ score, ...x }) => x);
+}
+function recordReview(it, ok) {
+  const u = ((S.sessions.find(s => s.n === it.n) || {}).unknown || []).find(x => x.word === it.word);
+  if (u) { u.rv = u.rv || { ok: 0, no: 0 }; u.rv[ok ? 'ok' : 'no']++; }
+}
+function stReview() {
+  const R = cur.review;
+  $('#step').innerHTML = `<div class="card"><h2>복습 · 지난번 단어</h2><p class="muted">지난 회차에서 모르는 단어였던 것들이에요. 뜻이 기억나는지 먼저 써 보고, 정답을 확인하세요.</p>
+    ${R.items.map((it, i) => { const r = R.results[i]; return `<div class="card" style="background:#faf8fd"><b style="font-size:18px">${esc(it.word)}</b> <button class="sec" data-s="${i}">🔊</button>
+      <div class="muted">${esc(it.sentence)}</div>
+      <input type="text" data-i="${i}" value="${esc((r && r.guess) || (R.drafts || {})[i] || '')}" placeholder="뜻이 기억나요?" style="margin-top:6px" ${r ? 'disabled' : ''}>
+      <div id="rv${i}" style="margin-top:6px">${r ? `정답: <b>${esc(it.meaning)}</b> ${r.ok ? '<span class="good">✅ 알았어요</span>' : '<span class="bad">❌ 몰랐어요</span>'}`
+        : `<button class="sec" data-show="${i}">정답 확인</button>`}</div></div>`; }).join('')}${nextBtn(false)}</div>`;
+  const upd = () => $('#nx').disabled = !R.items.every((_, i) => R.results[i]);
+  $('#step').oninput = e => { const i = e.target.dataset.i; if (i != null) (R.drafts = R.drafts || {})[i] = e.target.value; };
+  $('#step').onclick = e => {
+    const b = e.target;
+    if (b.dataset.s != null) speak(R.items[b.dataset.s].word, .8);
+    if (b.dataset.show != null) { const i = +b.dataset.show; $('#rv' + i).innerHTML = `정답: <b>${esc(R.items[i].meaning)}</b> <button data-j="${i}:1">✅ 알았어요</button> <button class="sec" data-j="${i}:0">❌ 몰랐어요</button>`; }
+    if (b.dataset.j) {
+      const [i, ok] = b.dataset.j.split(':').map(Number); const guess = $(`input[data-i="${i}"]`).value;
+      R.results[i] = { guess, ok: !!ok }; recordReview(R.items[i], !!ok); save(); stReview();
+    }
+  };
+  upd(); $('#nx').onclick = nextStep;
+}
+
+/* ---------- 지난 회차 기록 보기 (읽기 전용) ---------- */
+function viewSession(s) {
+  const mm = models[s.n] || {};
+  app.innerHTML = `<div class="card"><h2>${s.n}회차 · ${esc(s.date)}</h2>
+    ${(s.sentences || []).map((sent, i) => `<div class="card" style="background:#faf8fd"><div class="row" style="align-items:flex-start">
+      ${chunksOf(sent).map((c, j) => { const k = i + '_' + j; return `<div style="width:${Math.max(120, c.length * 9)}px"><span class="tok" data-say="${esc(c)}" style="margin:0 0 4px">${esc(c)}</span>
+        <div>${esc((s.chunkMeans || {})[k] || '—')}</div>${mm[k] ? `<div class="good" style="font-size:13px">선생님: ${esc(mm[k])}</div>` : ''}</div>`; }).join('')}</div></div>`).join('')}
+    ${(s.unknown || []).length ? `<h3>단어</h3>${s.unknown.map(u => `<div class="row" style="margin:4px 0"><b>${esc(u.word)}</b> <span class="muted">짐작: ${esc(u.guess || '—')} → 찾은 뜻: ${esc(u.myMeaning || '—')}</span></div>`).join('')}` : ''}
+    <button id="h" style="margin-top:10px">홈으로</button></div>`;
+  $('#h').onclick = viewHome;
+  app.onclick = e => { const el = e.target.closest('[data-say]'); if (el) speak(el.dataset.say, .85); };
+}
+
+/* ---------- 1. 문장 입력 ---------- */
+function stInput() {
+  $('#step').innerHTML = `<div class="card"><h2>1. 원서 문장 타이핑</h2>
+    <p class="muted">오늘 읽은 문장을 그대로 쳐 보세요. 한 줄에 한 문장씩, 최대 10문장.<br>
+    선생님이 나눠 준 <b>의미 단위</b>는 <b>/</b> 로 구분해서 쓰세요. (없으면 2~3단어씩 자동으로 묶어요)</p>
+    <textarea id="t" placeholder="He opened / the door / slowly.&#10;The room was dark / and cold.">${esc(cur.sentences.join('\n'))}</textarea>
+    <div id="cnt" class="muted"></div>${nextBtn(false, '저장하고 다음 →')}</div>`;
+  const parse = () => $('#t').value.split(/\n+/).flatMap(l => { l = l.trim().replace(/^\/+|\/+$/g, '').trim(); return l.includes('/') ? [l] : l.split(/(?<=[.!?]["”']?)\s+/); })
+    .map(s => s.trim()).filter(s => /[A-Za-z]/.test(s)).slice(0, 10);
+  const upd = () => { const p = parse(); $('#cnt').textContent = p.length + '문장'; $('#nx').disabled = !p.length; };
+  $('#t').oninput = upd; upd();
+  $('#nx').onclick = () => { const p = parse(); if (p.join() !== cur.sentences.join()) { cur.sentences = p; cur.unknown = []; cur.wordSents = []; cur.chunkMeans = {}; cur.heard = {}; cur.done = { input: true }; } nextStep(); };
+}
+
+/* ---------- 2. 듣고 따라하기 ---------- */
+function stListen() {
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  cur.heard = cur.heard || {};
+  $('#step').innerHTML = `<div class="card"><h2>3. 듣고 따라 읽기</h2><p class="muted">🔊 듣고, ${SR ? '🎤 따라 말해 보고, ' : ''}다 읽으면 체크하세요.</p>
+    ${cur.sentences.map((s, i) => `<div class="card" style="background:#faf8fd"><div style="font-size:18px">${esc(chunksOf(s).join(' / '))}</div>
+      <div class="row" style="margin-top:8px"><button data-a="p" data-i="${i}">🔊</button><button class="sec" data-a="s" data-i="${i}">🐢 천천히</button>
+      ${SR ? `<button class="sec" data-a="m" data-i="${i}">🎤 따라 말하기</button>` : ''}
+      <label><input type="checkbox" data-a="c" data-i="${i}" ${cur.heard[i] ? 'checked' : ''}> 읽었어요</label></div><div class="muted" id="r${i}"></div></div>`).join('')}
+    ${nextBtn(false)}</div>`;
+  const upd = () => $('#nx').disabled = !cur.sentences.every((_, i) => cur.heard[i]);
+  $('#step').onclick = e => {
+    const b = e.target; const i = +b.dataset.i, a = b.dataset.a; if (!a) return;
+    if (a === 'p') speak(plain(cur.sentences[i]), .9);
+    if (a === 's') speak(plain(cur.sentences[i]), .6);
+    if (a === 'c') { cur.heard[i] = b.checked; save(); upd(); }
+    if (a === 'm') {
+      const rec = new SR(); rec.lang = 'en-US'; $('#r' + i).textContent = '듣고 있어요... 말해 보세요';
+      rec.onresult = ev => {
+        const said = normS(ev.results[0][0].transcript).split(' '), want = normS(plain(cur.sentences[i])).split(' ');
+        const hit = want.filter(w => said.includes(w)).length, pct = Math.round(hit / want.length * 100);
+        $('#r' + i).innerHTML = `내 발음 인식: "${esc(ev.results[0][0].transcript)}" → <b class="${pct >= 80 ? 'good' : 'bad'}">${pct}%</b>`;
+      };
+      rec.onerror = () => $('#r' + i).textContent = '인식하지 못했어요. 다시 눌러 보세요.';
+      rec.start();
+    }
+  };
+  upd(); $('#nx').onclick = nextStep;
+}
+
+/* ---------- 3. 영어 순서대로 뜻 쓰기 (의미 단위 직독직해) ---------- */
+function stChunk() {
+  cur.chunkMeans = cur.chunkMeans || {};
+  $('#step').innerHTML = `<div class="card"><h2>4. 영어 순서대로 뜻 쓰기</h2><p class="muted">영어를 앞에서부터 읽으며, 각 덩어리 아래에 뜻을 써 보세요. (영어 덩어리를 누르면 소리가 나요)</p>
+    ${cur.sentences.map((s, i) => `<div class="card" style="background:#faf8fd"><div class="row" style="align-items:flex-start">
+      ${chunksOf(s).map((c, j) => `<div style="width:${Math.max(120, c.length * 9)}px"><span class="tok" data-say="${esc(c)}" style="margin:0 0 4px">${esc(c)}</span>
+        <input type="text" data-i="${i}" data-j="${j}" placeholder="뜻" value="${esc(cur.chunkMeans[i + '_' + j] || '')}"></div>`).join('')}</div></div>`).join('')}${nextBtn(false)}</div>`;
+  const upd = () => $('#nx').disabled = !cur.sentences.every((s, i) => chunksOf(s).every((_, j) => (cur.chunkMeans[i + '_' + j] || '').trim()));
+  $('#step').oninput = e => { const t = e.target; if (t.dataset.i == null) return; cur.chunkMeans[t.dataset.i + '_' + t.dataset.j] = t.value; save(); upd(); };
+  // (선생님 모범 직독직해는 회차를 마친 뒤 '내 기록 보기'에서 비교해서 볼 수 있다)
+  $('#step').onclick = e => { const el = e.target.closest('[data-say]'); if (el) speak(el.dataset.say, .85); };
+  upd(); $('#nx').onclick = nextStep;
+}
+
+/* ---------- 4. 어순 배열 (의미 단위) ---------- */
+function stScramble() {
+  const list = cur.sentences.map(chunksOf).filter(c => c.length >= 2);
+  if (!list.length) return nextStep();
+  let idx = 0;
+  const show = () => {
+    if (idx >= list.length) { $('#step').innerHTML = `<div class="card"><h2>👏 어순 배열 완료!</h2>${nextBtn()}</div>`; $('#nx').onclick = nextStep; return; }
+    const sent = list[idx].join(' '), toks = list[idx].map((t, i) => ({ t: i === 0 ? t.replace(/^[A-Z](?=[a-z]+(\s|$))/, m => m.toLowerCase()) : t, id: i }));
+    let pool = shuffle(toks); if (pool.map(x => x.id).join() === toks.map(x => x.id).join()) pool = pool.reverse();
+    let ans = [];
+    $('#step').innerHTML = `<div class="card"><h2>5. 어순 배열 <span class="muted">${idx + 1}/${list.length}</span></h2>
+      <p class="muted">덩어리를 눌러 올바른 순서로 놓으세요. 소리로 힌트: <button class="sec" id="hear">🔊</button></p>
+      <div class="ans" id="ans"></div><div id="pool"></div>
+      <div class="row" style="margin-top:10px"><button id="chk">확인</button><button class="sec" id="rst">다시</button><button class="sec" id="giveup">정답 보기</button></div><p id="fb"></p></div>`;
+    const draw = () => {
+      $('#ans').innerHTML = ans.map(x => `<span class="tok" data-id="${x.id}" data-w="a">${esc(x.t)}</span>`).join('');
+      $('#pool').innerHTML = pool.filter(x => !ans.includes(x)).map(x => `<span class="tok" data-id="${x.id}" data-w="p">${esc(x.t)}</span>`).join('');
+    };
+    $('#step').onclick = e => { const el = e.target.closest('.tok'); if (!el) return; const x = toks[+el.dataset.id]; if (el.dataset.w === 'p') ans.push(x); else ans = ans.filter(y => y !== x); draw(); };
+    $('#hear').onclick = () => speak(sent);
+    $('#rst').onclick = () => { ans = []; draw(); };
+    const finish = () => { $('#fb').innerHTML = `<span class="good">✅ ${esc(sent)}</span> <button id="n2">다음 문장</button>`; speak(sent); $('#n2').onclick = () => { idx++; show(); }; };
+    $('#chk').onclick = () => {
+      if (normS(ans.map(x => x.t).join(' ')) === normS(sent)) finish();
+      else { $('#ans').classList.add('shake'); setTimeout(() => $('#ans').classList.remove('shake'), 300); $('#fb').innerHTML = '<span class="bad">다시 생각해 보세요</span>'; }
+    };
+    $('#giveup').onclick = finish;
+    draw();
+  };
+  show();
+}
+
+/* ---------- 예습: 모르는 단어 표시 + 짐작한 뜻 (첫 번째 빈칸) ---------- */
+const cleanWord = w => w.replace(/^[^A-Za-z]+|[^A-Za-z'-]+$/g, '').toLowerCase();
+function stMark() {
+  const sents = cur.sentences.map(plain);
+  $('#step').innerHTML = `<div class="card"><h2>2. 예습 · 모르는 단어</h2><p class="muted">① 모르는 단어를 눌러 표시하세요. (책에 없는 단어는 직접 추가) ② 문장을 보고 <b>짐작되는 뜻</b>을 먼저 써 보세요. 틀려도 괜찮아요!</p>
+    ${sents.map((s, i) => `<p style="font-size:17px;line-height:1.9">${s.split(/\s+/).map(w => { const c = cleanWord(w); return c ? `<span class="w ${cur.unknown.some(u => u.word === c) ? 'sel' : ''}" data-i="${i}" data-w="${esc(c)}">${esc(w)}</span>` : esc(w); }).join(' ')}</p>`).join('')}
+    <div class="row"><input type="text" id="add" placeholder="직접 추가" style="width:auto;flex:1"><button class="sec" id="addb">추가</button></div>
+    <div id="gl"></div>${nextBtn(true, '모르는 단어 없어요 → 다음')}</div>`;
+  const upd = () => {
+    const all = cur.unknown.length > 0;
+    $('#nx').textContent = all ? '다음 단계 →' : '모르는 단어 없어요 → 다음';
+    $('#nx').disabled = !cur.unknown.every(u => (u.guess || '').trim());
+  };
+  const drawGuess = () => {
+    $('#gl').innerHTML = cur.unknown.length ? `<h4 style="margin-bottom:6px">내가 짐작한 뜻</h4>` + cur.unknown.map((u, i) => `<div class="row" style="margin:6px 0"><b style="min-width:90px">${esc(u.word)}</b>
+      <input type="text" data-g="${i}" value="${esc(u.guess || '')}" placeholder="짐작되는 뜻" style="flex:1;width:auto"></div>`).join('') : '';
+    upd();
+  };
+  const toggle = (w, i) => { const k = cur.unknown.findIndex(u => u.word === w); if (k >= 0) cur.unknown.splice(k, 1); else cur.unknown.push({ word: w, sentence: sents[i] ?? '' }); save(); drawGuess(); };
+  $('#step').onclick = e => { const el = e.target.closest('.w'); if (!el) return; toggle(el.dataset.w, +el.dataset.i); document.querySelectorAll(`.w[data-w="${el.dataset.w}"]`).forEach(x => x.classList.toggle('sel', cur.unknown.some(u => u.word === el.dataset.w))); };
+  $('#step').oninput = e => { const g = e.target.dataset.g; if (g == null) return; cur.unknown[g].guess = e.target.value; save(); upd(); };
+  $('#addb').onclick = () => { const w = cleanWord($('#add').value); if (w && !cur.unknown.some(u => u.word === w)) { cur.unknown.push({ word: w, sentence: sents.find(s => s.toLowerCase().includes(w)) || '' }); save(); drawGuess(); } $('#add').value = ''; };
+  drawGuess(); $('#nx').onclick = nextStep;
+}
+
+/* ---------- 6. 찾은 뜻 쓰기 (두 번째 빈칸) ---------- */
+function stWrite() {
+  if (!cur.unknown.length) return nextStep();
+  $('#step').innerHTML = `<div class="card"><h2>6. 사전에서 찾은 뜻 쓰기</h2><p class="muted">사전이나 인터넷에서 찾아서, 이 문장에 맞는 뜻을 써 보세요. 내가 짐작한 뜻과 비교해 보세요.</p>
+    ${cur.unknown.map((u, i) => `<div class="card" style="background:#faf8fd"><b style="font-size:18px">${esc(u.word)}</b> <button class="sec" data-s="${i}">🔊</button>
+      <a href="https://en.dictionary.naver.com/#/search?query=${encodeURIComponent(u.word)}" target="_blank" rel="noopener"><button class="sec" type="button">🔎 사전</button></a>
+      <div class="muted">${esc(u.sentence)}</div><div style="margin:6px 0">내가 짐작한 뜻: <b>${esc(u.guess || '—')}</b></div>
+      <input type="text" data-i="${i}" value="${esc(u.myMeaning || '')}" placeholder="찾은 뜻"></div>`).join('')}${nextBtn(false)}</div>`;
+  const upd = () => $('#nx').disabled = !cur.unknown.every(u => (u.myMeaning || '').trim());
+  $('#step').oninput = e => { const i = e.target.dataset.i; if (i == null) return; cur.unknown[i].myMeaning = e.target.value; save(); upd(); };
+  $('#step').onclick = e => { const s = e.target.dataset.s; if (s != null) speak(cur.unknown[s].word, .8); };
+  upd(); $('#nx').onclick = nextStep;
+}
+
+/* ---------- 7. 단어로 영작 (학생은 입력만, 선생님이 AI로 첨삭) ---------- */
+function stCompose() {
+  if (!cur.unknown.length) return nextStep();
+  const ws = cur.wordSents;
+  cur.unknown.forEach(u => { if (!ws.some(x => x.word === u.word)) ws.push({ word: u.word, text: '' }); });
+  $('#step').innerHTML = `<div class="card"><h2>7. 새 단어로 영어 문장 만들기</h2><p class="muted">단어마다 나만의 문장을 써 보세요. 제출하면 선생님이 확인해요.</p>
+    ${ws.map((x, i) => `<div class="card" style="background:#faf8fd"><b>${esc(x.word)}</b> <span class="muted">${esc((cur.unknown.find(u => u.word === x.word) || {}).myMeaning || '')}</span>
+      <textarea data-i="${i}" style="min-height:60px;margin-top:6px">${esc(x.text)}</textarea></div>`).join('')}
+    <span id="msg" class="muted"></span>${nextBtn(false, '선생님께 제출하고 다음 →')}</div>`;
+  const upd = () => $('#nx').disabled = !ws.every(x => x.text.trim());
+  $('#step').oninput = e => { const i = e.target.dataset.i; if (i == null) return; ws[i].text = e.target.value; save(); upd(); };
+  $('#nx').onclick = async () => {
+    const text = ws.map(x => `${x.word} | 뜻: ${(cur.unknown.find(u => u.word === x.word) || {}).myMeaning || ''} | ${x.text.trim()}`).join('\n');
+    if (API && cur.wordsText !== text) {
+      $('#nx').disabled = true; $('#msg').textContent = '제출 중... ';
+      try { const r = await api('essaySubmit', { name: S.name, sessionNo: cur.n, kind: 'words', prompt: '단어 영작', text }); cur.wordsId = r.id; cur.wordsText = text; save(); }
+      catch (e) { $('#msg').textContent = '제출 실패: ' + e.message + ' (다시 눌러 주세요)'; $('#nx').disabled = false; return; }
+    }
+    nextStep();
+  };
+  upd();
+}
+
+/* ---------- 8. 영작문 (3회차마다) ---------- */
+function stEssay() {
+  const words = cur.unknown.map(u => u.word);
+  cur.essay = cur.essay || { text: '' };
+  const prompt = `오늘 읽은 부분에 대해 영어로 4~6문장을 써 보세요.` + (words.length ? ` 오늘의 단어 중 3개 이상을 꼭 사용하세요: ${words.slice(0, 8).join(', ')}` : '');
+  $('#step').innerHTML = `<div class="card"><h2>8. 영작문 ✍️</h2><p>${esc(prompt)}</p>
+    <textarea id="t" style="min-height:180px" ${cur.essay.id ? 'disabled' : ''}>${esc(cur.essay.text)}</textarea><div id="msg" class="muted"></div>
+    <div class="row">${cur.essay.id ? '<span class="good">제출 완료! 선생님 첨삭이 끝나면 홈에 알림이 떠요.</span>' : '<button class="gold" id="sub">선생님께 제출</button>'}</div>${nextBtn(!!cur.essay.id)}</div>`;
+  if (!cur.essay.id) $('#sub').onclick = async () => {
+    const text = $('#t').value.trim(); if (text.split(/\s+/).length < 15) { $('#msg').textContent = '조금 더 써 볼까요? (15단어 이상)'; return; }
+    $('#sub').disabled = true; $('#msg').textContent = '제출 중...';
+    try { const r = await api('essaySubmit', { name: S.name, sessionNo: cur.n, prompt, text }); cur.essay = { id: r.id, text }; save(); stEssay(); }
+    catch (e) { $('#msg').textContent = '제출 실패: ' + e.message; $('#sub').disabled = false; }
+  };
+  $('#nx').onclick = nextStep;
+}
+
+/* ---------- 9. 수정된 문장 + 이유 ---------- */
+function stRevise() {
+  renderRevise(essayItems(), nextStep, true); // 선생님이 승인해서 공개한 첨삭만 나온다
+}
+function essayItems() {
+  return pendingFixes().flatMap(e => e.final.corrections.map((c, i) => ({ key: 'e:' + e.id + ':' + i, essayId: e.id, original: c.original, corrected: c.corrected, hint: c.reason })));
+}
+function renderRevise(items, done, inSession) {
+  const host = inSession ? $('#step') : app;
+  if (!items.length) { host.innerHTML = `<div class="card"><h2>${inSession ? '아직 선생님 첨삭이 도착하지 않았어요' : '고칠 문장이 없어요 🎉'}</h2><p class="muted">${inSession ? '선생님이 확인하면 홈 화면에 알림이 떠요. 그때 고쳐쓰기를 하면 돼요.' : ''}</p>${nextBtn(true, inSession ? '회차 마치기' : '홈으로')}</div>`; $('#nx').onclick = done; return; }
+  const store = inSession ? (cur.revisions = cur.revisions || {}) : (S.revisions = S.revisions || {});
+  host.innerHTML = `<div class="card"><h2>9. 고친 문장 + 이유 쓰기</h2><p class="muted">틀린 문장과 고친 문장을 비교하고, ① 고친 문장을 직접 다시 쓰고 ② 왜 고쳤는지 내 말로 써 보세요.</p>
+    ${items.map((it, i) => { const r = store[it.key] || {}; return `<div class="card" style="background:#faf8fd">
+      <div><span class="mark">${esc(it.original)}</span></div><div style="margin-top:4px"><span class="fix">${esc(it.corrected)}</span></div>
+      <textarea data-k="${i}" data-f="re" placeholder="① 고친 문장을 다시 써 보기" style="min-height:50px;margin-top:8px">${esc(r.re || '')}</textarea>
+      <textarea data-k="${i}" data-f="why" placeholder="② 왜 고쳤을까요? (한국어로)" style="min-height:50px;margin-top:6px">${esc(r.why || '')}</textarea>
+      <div class="muted" id="h${i}"></div><button class="sec" data-hint="${i}">힌트 보기</button></div>`; }).join('')}${nextBtn(false, inSession ? '회차 마치기' : '제출하고 홈으로')}</div>`;
+  const upd = () => $('#nx').disabled = !items.every(it => { const r = store[it.key] || {}; return (r.re || '').trim() && (r.why || '').trim().length >= 4; });
+  host.oninput = e => { const k = e.target.dataset.k; if (k == null) return; const key = items[k].key; store[key] = { ...(store[key] || {}), [e.target.dataset.f]: e.target.value, original: items[k].original, corrected: items[k].corrected }; save(); upd(); };
+  host.onclick = e => { const h = e.target.dataset.hint; if (h != null) $('#h' + h).textContent = '💡 ' + items[h].hint; };
+  upd();
+  $('#nx').onclick = async () => {
+    const byEssay = {};
+    items.filter(it => it.essayId).forEach(it => (byEssay[it.essayId] = byEssay[it.essayId] || []).push(store[it.key]));
+    for (const id of Object.keys(byEssay)) { try { await api('essayRevised', { id, revised: byEssay[id] }); const e = essays.find(x => x.id === id); if (e) e.revised = true; } catch (er) {} }
+    done();
+  };
+}
+
+viewLogin();
+</script>
+</body>
+</html>
