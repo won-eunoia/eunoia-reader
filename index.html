@@ -154,7 +154,7 @@ function viewHome() {
 
 /* ---------- 단계 틀 ---------- */
 function stepList() {
-  const l = [...(cur.review && cur.review.items.length ? [['review', '복습']] : []), ['input', '문장 입력'], ['mark', '예습 단어'], ['listen', '듣고 따라하기'], ['chunk', '영어 순서 뜻쓰기'], ['scramble', '어순 배열'], ['write', '찾은 뜻 쓰기'], ['compose', '단어로 영작']];
+  const l = [...(cur.review && cur.review.items.length ? [['review', '복습']] : []), ['input', '문장 입력'], ['mark', '예습 단어'], ['write', '찾은 뜻 쓰기'], ['listen', '듣고 따라하기'], ['chunk', '영어 순서 뜻쓰기'], ['scramble', '어순 배열'], ['compose', '단어로 영작']];
   if (cur.n % ESSAY_EVERY === 0) l.push(['essay', '영작문']);
   l.push(['revise', '수정·이유']);
   return l;
@@ -214,9 +214,8 @@ function stReview() {
 function viewSession(s) {
   const mm = models[s.n] || {};
   app.innerHTML = `<div class="card"><h2>${s.n}회차 · ${esc(s.date)}</h2>
-    ${(s.sentences || []).map((sent, i) => `<div class="card" style="background:#faf8fd"><div class="row" style="align-items:flex-start">
-      ${chunksOf(sent).map((c, j) => { const k = i + '_' + j; return `<div style="width:${Math.max(120, c.length * 9)}px"><span class="tok" data-say="${esc(c)}" style="margin:0 0 4px">${esc(c)}</span>
-        <div>${esc((s.chunkMeans || {})[k] || '—')}</div>${mm[k] ? `<div class="good" style="font-size:13px">선생님: ${esc(mm[k])}</div>` : ''}</div>`; }).join('')}</div></div>`).join('')}
+    ${(s.sentences || []).map((sent, i) => `<div class="card" style="background:#faf8fd"><div style="font-size:17px">${esc(chunksOf(sent).join(' / '))} <button class="sec" data-say="${esc(plain(sent))}">🔊</button></div>
+      <div style="margin-top:6px">내가 쓴 뜻: ${esc(sentMean(s, i) || '—')}</div>${mm[i] ? `<div class="good" style="margin-top:4px">선생님 모범: ${esc(mm[i])}</div>` : ''}</div>`).join('')}
     ${(s.unknown || []).length ? `<h3>단어</h3>${s.unknown.map(u => `<div class="row" style="margin:4px 0"><b>${esc(u.word)}</b> <span class="muted">짐작: ${esc(u.guess || '—')} → 찾은 뜻: ${esc(u.myMeaning || '—')}</span></div>`).join('')}` : ''}
     <button id="h" style="margin-top:10px">홈으로</button></div>`;
   $('#h').onclick = viewHome;
@@ -234,14 +233,14 @@ function stInput() {
     .map(s => s.trim()).filter(s => /[A-Za-z]/.test(s)).slice(0, 10);
   const upd = () => { const p = parse(); $('#cnt').textContent = p.length + '문장'; $('#nx').disabled = !p.length; };
   $('#t').oninput = upd; upd();
-  $('#nx').onclick = () => { const p = parse(); if (p.join() !== cur.sentences.join()) { cur.sentences = p; cur.unknown = []; cur.wordSents = []; cur.chunkMeans = {}; cur.heard = {}; cur.done = { input: true }; } nextStep(); };
+  $('#nx').onclick = () => { const p = parse(); if (p.join() !== cur.sentences.join()) { cur.sentences = p; cur.unknown = []; cur.wordSents = []; cur.sentMeans = {}; cur.heard = {}; cur.done = { input: true }; } nextStep(); };
 }
 
 /* ---------- 2. 듣고 따라하기 ---------- */
 function stListen() {
   const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
   cur.heard = cur.heard || {};
-  $('#step').innerHTML = `<div class="card"><h2>3. 듣고 따라 읽기</h2><p class="muted">🔊 듣고, ${SR ? '🎤 따라 말해 보고, ' : ''}다 읽으면 체크하세요.</p>
+  $('#step').innerHTML = `<div class="card"><h2>4. 듣고 따라 읽기</h2><p class="muted">🔊 듣고, ${SR ? '🎤 따라 말해 보고, ' : ''}다 읽으면 체크하세요.</p>
     ${cur.sentences.map((s, i) => `<div class="card" style="background:#faf8fd"><div style="font-size:18px">${esc(chunksOf(s).join(' / '))}</div>
       <div class="row" style="margin-top:8px"><button data-a="p" data-i="${i}">🔊</button><button class="sec" data-a="s" data-i="${i}">🐢 천천히</button>
       ${SR ? `<button class="sec" data-a="m" data-i="${i}">🎤 따라 말하기</button>` : ''}
@@ -268,16 +267,17 @@ function stListen() {
 }
 
 /* ---------- 3. 영어 순서대로 뜻 쓰기 (의미 단위 직독직해) ---------- */
+// 문장 전체의 영어 순서 뜻: sentMeans[문장번호] = 문자열. (예전 덩어리별 chunkMeans 기록이 있으면 이어 붙여서 보여 준다)
+const sentMean = (s, i) => (s.sentMeans || {})[i] || chunksOf((s.sentences || [])[i] || '').map((_, j) => (s.chunkMeans || {})[i + '_' + j]).filter(Boolean).join(' / ');
 function stChunk() {
-  cur.chunkMeans = cur.chunkMeans || {};
-  $('#step').innerHTML = `<div class="card"><h2>4. 영어 순서대로 뜻 쓰기</h2><p class="muted">영어를 앞에서부터 읽으며, 각 덩어리 아래에 뜻을 써 보세요. (영어 덩어리를 누르면 소리가 나요)</p>
-    ${cur.sentences.map((s, i) => `<div class="card" style="background:#faf8fd"><div class="row" style="align-items:flex-start">
-      ${chunksOf(s).map((c, j) => `<div style="width:${Math.max(120, c.length * 9)}px"><span class="tok" data-say="${esc(c)}" style="margin:0 0 4px">${esc(c)}</span>
-        <input type="text" data-i="${i}" data-j="${j}" placeholder="뜻" value="${esc(cur.chunkMeans[i + '_' + j] || '')}"></div>`).join('')}</div></div>`).join('')}${nextBtn(false)}</div>`;
-  const upd = () => $('#nx').disabled = !cur.sentences.every((s, i) => chunksOf(s).every((_, j) => (cur.chunkMeans[i + '_' + j] || '').trim()));
-  $('#step').oninput = e => { const t = e.target; if (t.dataset.i == null) return; cur.chunkMeans[t.dataset.i + '_' + t.dataset.j] = t.value; save(); upd(); };
+  cur.sentMeans = cur.sentMeans || {};
+  $('#step').innerHTML = `<div class="card"><h2>5. 영어 순서대로 뜻 쓰기</h2><p class="muted">영어를 앞에서부터 읽는 순서 그대로 뜻을 쭉 써 보세요. 덩어리(/)마다 끊어서 쓰면 좋아요.</p>
+    ${cur.sentences.map((s, i) => `<div class="card" style="background:#faf8fd"><div style="font-size:18px">${esc(chunksOf(s).join(' / '))} <button class="sec" data-say="${i}">🔊</button></div>
+      <textarea data-i="${i}" placeholder="뜻을 영어 순서대로 쭉 쓰기 (예: 그는 열었다 / 문을 / 천천히)" style="min-height:56px;margin-top:8px">${esc(cur.sentMeans[i] || '')}</textarea></div>`).join('')}${nextBtn(false)}</div>`;
+  const upd = () => $('#nx').disabled = !cur.sentences.every((_, i) => (cur.sentMeans[i] || '').trim());
+  $('#step').oninput = e => { const t = e.target; if (t.dataset.i == null || t.tagName !== 'TEXTAREA') return; cur.sentMeans[t.dataset.i] = t.value; save(); upd(); };
   // (선생님 모범 직독직해는 회차를 마친 뒤 '내 기록 보기'에서 비교해서 볼 수 있다)
-  $('#step').onclick = e => { const el = e.target.closest('[data-say]'); if (el) speak(el.dataset.say, .85); };
+  $('#step').onclick = e => { const el = e.target.closest('[data-say]'); if (el) speak(plain(cur.sentences[el.dataset.say]), .85); };
   upd(); $('#nx').onclick = nextStep;
 }
 
@@ -291,8 +291,8 @@ function stScramble() {
     const sent = list[idx].join(' '), toks = list[idx].map((t, i) => ({ t: i === 0 ? t.replace(/^[A-Z](?=[a-z]+(\s|$))/, m => m.toLowerCase()) : t, id: i }));
     let pool = shuffle(toks); if (pool.map(x => x.id).join() === toks.map(x => x.id).join()) pool = pool.reverse();
     let ans = [];
-    $('#step').innerHTML = `<div class="card"><h2>5. 어순 배열 <span class="muted">${idx + 1}/${list.length}</span></h2>
-      <p class="muted">덩어리를 눌러 올바른 순서로 놓으세요. 소리로 힌트: <button class="sec" id="hear">🔊</button></p>
+    $('#step').innerHTML = `<div class="card"><h2>6. 어순 배열 <span class="muted">${idx + 1}/${list.length}</span></h2>
+      <p class="muted">덩어리를 눌러 올바른 순서로 놓으세요.</p>
       <div class="ans" id="ans"></div><div id="pool"></div>
       <div class="row" style="margin-top:10px"><button id="chk">확인</button><button class="sec" id="rst">다시</button><button class="sec" id="giveup">정답 보기</button></div><p id="fb"></p></div>`;
     const draw = () => {
@@ -300,9 +300,8 @@ function stScramble() {
       $('#pool').innerHTML = pool.filter(x => !ans.includes(x)).map(x => `<span class="tok" data-id="${x.id}" data-w="p">${esc(x.t)}</span>`).join('');
     };
     $('#step').onclick = e => { const el = e.target.closest('.tok'); if (!el) return; const x = toks[+el.dataset.id]; if (el.dataset.w === 'p') ans.push(x); else ans = ans.filter(y => y !== x); draw(); };
-    $('#hear').onclick = () => speak(sent);
     $('#rst').onclick = () => { ans = []; draw(); };
-    const finish = () => { $('#fb').innerHTML = `<span class="good">✅ ${esc(sent)}</span> <button id="n2">다음 문장</button>`; speak(sent); $('#n2').onclick = () => { idx++; show(); }; };
+    const finish = () => { $('#fb').innerHTML = `<span class="good">✅ ${esc(sent)}</span> <button id="n2">다음 문장</button>`; $('#n2').onclick = () => { idx++; show(); }; };
     $('#chk').onclick = () => {
       if (normS(ans.map(x => x.t).join(' ')) === normS(sent)) finish();
       else { $('#ans').classList.add('shake'); setTimeout(() => $('#ans').classList.remove('shake'), 300); $('#fb').innerHTML = '<span class="bad">다시 생각해 보세요</span>'; }
@@ -341,7 +340,7 @@ function stMark() {
 /* ---------- 6. 찾은 뜻 쓰기 (두 번째 빈칸) ---------- */
 function stWrite() {
   if (!cur.unknown.length) return nextStep();
-  $('#step').innerHTML = `<div class="card"><h2>6. 사전에서 찾은 뜻 쓰기</h2><p class="muted">사전이나 인터넷에서 찾아서, 이 문장에 맞는 뜻을 써 보세요. 내가 짐작한 뜻과 비교해 보세요.</p>
+  $('#step').innerHTML = `<div class="card"><h2>3. 사전에서 찾은 뜻 쓰기</h2><p class="muted">사전이나 인터넷에서 찾아서, 이 문장에 맞는 뜻을 써 보세요. 내가 짐작한 뜻과 비교해 보세요.</p>
     ${cur.unknown.map((u, i) => `<div class="card" style="background:#faf8fd"><b style="font-size:18px">${esc(u.word)}</b> <button class="sec" data-s="${i}">🔊</button>
       <a href="https://en.dictionary.naver.com/#/search?query=${encodeURIComponent(u.word)}" target="_blank" rel="noopener"><button class="sec" type="button">🔎 사전</button></a>
       <div class="muted">${esc(u.sentence)}</div><div style="margin:6px 0">내가 짐작한 뜻: <b>${esc(u.guess || '—')}</b></div>

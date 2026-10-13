@@ -96,12 +96,14 @@ function chunksOf(raw) {
   while (i < w.length) { const left = w.length - i, n = left === 4 ? 2 : left <= 3 ? left : 3; out.push(w.slice(i, i + n).join(' ')); i += n; }
   return out;
 }
+// 문장 전체의 영어 순서 뜻 (예전 덩어리별 기록이 있으면 이어 붙임)
+const sentMean = (s, i) => (s.sentMeans || {})[i] || chunksOf((s.sentences || [])[i] || '').map((_, j) => (s.chunkMeans || {})[i + '_' + j]).filter(Boolean).join(' / ');
 // 학생 상세: 직독직해 + 선생님 모범(입력하면 학생 '내 기록 보기'에 나란히 공개), 단어, 복습 결과
 function detail(name, d, models = {}) {
   if (!d || !d.sessions) return '<div class="card">데이터가 없어요.</div>';
   return `<div class="card"><h3>${esc(name)}</h3>${d.sessions.slice().reverse().map(s => { const mm = models[s.n] || {}; return `<h4>${s.n}회차 · ${esc(s.date)}</h4>
-    ${(s.sentences || []).map((sent, i) => `<div class="cor">${chunksOf(sent).map((c, j) => { const k = i + '_' + j; return `<span style="display:inline-block;margin:2px 10px 6px 0;width:${Math.max(130, c.length * 9)}px;vertical-align:top"><b>${esc(c)}</b><br><span class="muted">${esc((s.chunkMeans || {})[k] || '—')}</span>
-      <input data-m="${s.n}" data-k="${k}" value="${esc(mm[k] || '')}" placeholder="모범 뜻" style="padding:4px;margin-top:2px"></span>`; }).join('')}</div>`).join('')}
+    ${(s.sentences || []).map((sent, i) => `<div class="cor"><b>${esc(chunksOf(sent).join(' / '))}</b><div class="muted">학생: ${esc(sentMean(s, i) || '—')}</div>
+      <input data-m="${s.n}" data-k="${i}" value="${esc(mm[i] || '')}" placeholder="모범 뜻 (영어 순서대로)" style="padding:6px;margin-top:4px"></div>`).join('')}
     ${(s.sentences || []).length ? `<button class="sec" data-sm="${s.n}">모범 직독직해 저장 (학생에게 공개)</button>` : ''}
     ${(s.unknown || []).length ? `<p><b>모르는 단어</b> ${(s.unknown).map(u => `${esc(u.word)} <span class="muted">(짐작: ${esc(u.guess || '—')} → 찾은 뜻: ${esc(u.myMeaning || '—')}${u.rv ? ` · 복습 ✅${u.rv.ok} ❌${u.rv.no}` : ''})</span>`).join(', ')}</p>` : ''}`; }).join('')}</div>`;
 }
@@ -170,7 +172,7 @@ async function viewReport() {
       ${c.miss.length ? `<p class="keep"><b>자주 놓친 단어</b> ${esc(c.miss.join(', '))}</p>` : ''}${sess.length ? '' : '<p class="muted">이 기간에 학습 기록이 없어요.</p>'}`;
     sess.slice().reverse().forEach(ss => {
       h += `<div class="rbar">▶ ${ss.n}회차 · ${esc(ss.date || '')}</div>`;
-      if (o1 && (ss.sentences || []).length) h += (ss.sentences).map((sent, i) => `<div class="keep">${chunksOf(sent).map((ck, j) => { const k = i + '_' + j; return `<span class="chunk"><b>${esc(ck)}</b><br><span class="m">${esc((ss.chunkMeans || {})[k] || '—')}</span>${(mm[ss.n] || {})[k] ? `<br><span class="t">모범: ${esc(mm[ss.n][k])}</span>` : ''}</span>`; }).join('')}</div>`).join('');
+      if (o1 && (ss.sentences || []).length) h += (ss.sentences).map((sent, i) => `<div class="keep" style="margin-bottom:6px"><b>${esc(chunksOf(sent).join(' / '))}</b><br><span class="m">학생: ${esc(sentMean(ss, i) || '—')}</span>${(mm[ss.n] || {})[i] ? `<br><span class="t">모범: ${esc(mm[ss.n][i])}</span>` : ''}</div>`).join('');
       if (o2 && (ss.unknown || []).length) h += `<table class="rt keep" style="margin-top:6px"><tr><th>단어</th><th>짐작한 뜻</th><th>찾은 뜻</th><th>복습</th></tr>${ss.unknown.map(u => `<tr><td><b>${esc(u.word)}</b></td><td>${esc(u.guess || '—')}</td><td>${esc(u.myMeaning || '—')}</td><td>${u.rv ? `✅${u.rv.ok} ❌${u.rv.no}` : '—'}</td></tr>`).join('')}</table>`;
       if (o3) mine.filter(e => String(e.sessionNo) === String(ss.n)).forEach(e => {
         const fb = e.status === 'approved' ? e.final : null;
