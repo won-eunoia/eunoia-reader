@@ -52,6 +52,9 @@ async function api(action, p = {}) {
   const r = await fetch(API, { method: 'POST', headers: { 'Content-Type': 'text/plain' }, body: JSON.stringify({ action, pw: PW, ...p }) });
   const j = await r.json(); if (j.error) throw new Error(j.error); return j;
 }
+// AI 첨삭 연결 전(서버에 ANTHROPIC_API_KEY 미등록)일 때의 안내
+const AI_NOT_READY = '🔌 AI 첨삭이 아직 연결되지 않았어요. Apps Script의 스크립트 속성에 ANTHROPIC_API_KEY를 등록하면 바로 쓸 수 있어요. (그 전에는 첨삭을 직접 써서 승인할 수 있어요)';
+const aiNotReady = e => /ANTHROPIC_API_KEY/.test(String(e && e.message));
 function login(msg = '') {
   app.innerHTML = `<div class="card"><h3>선생님 비밀번호</h3><input type="password" id="pw"><p class="muted">${esc(msg)}</p><button id="go">들어가기</button></div>`;
   $('#go').onclick = async () => { PW = $('#pw').value; try { await api('tStudents'); try { sessionStorage.setItem('wb_pw', PW); } catch (e) {} view(); } catch (e) { login(e.message === 'bad_password' ? '비밀번호가 틀렸어요' : e.message); } };
@@ -75,34 +78,32 @@ async function view() {
       essays = (await api('tEssays')).essays;
       const list = essays.filter(e => e.status === tab);
       const todo = tab === 'pending' ? list.filter(e => !e.final && !(e.ai && (e.ai.corrections || e.ai.error))) : [];
-      $('#body').innerHTML = (todo.length ? `<div class="card row"><button class="gold" id="batch">AI 초안 일괄 생성 (${todo.length}건)</button><span class="muted" id="bmsg">한 건씩 차례로 처리해요. 창을 닫지 마세요.</span></div>` : '')
+      // AI 버튼은 첨삭 대기 탭에 항상 보인다 (대기 건이 없으면 비활성). AI 키가 연결되기 전에는 눌러도 안내만 나온다.
+      $('#body').innerHTML = (tab === 'pending' ? `<div class="card row"><button class="gold" id="batch" ${todo.length ? '' : 'disabled'}>AI 초안 일괄 생성 (${todo.length}건)</button><span class="muted" id="bmsg">${todo.length ? '한 건씩 차례로 처리해요. 창을 닫지 마세요.' : 'AI 초안을 만들 대기 건이 없어요.'}</span></div>` : '')
         + (list.length ? list.map(card).join('') : '<p class="muted">없어요.</p>');
       bind();
-      if (todo.length) $('#batch').onclick = async () => {
-        $('#batch').disabled = true; let fail = 0;
-        for (let i = 0; i < todo.length; i++) {
+      if (tab === 'pending') $('#batch').onclick = async () => {
+        $('#batch').disabled = true; let fail = 0, notReady = false;
+        for (let i = 0; i < todo.length && !notReady; i++) {
           $('#bmsg').textContent = `처리 중 ${i + 1}/${todo.length} (${todo[i].name})`;
-          try { await api('tRegrade', { id: todo[i].id }); } catch (e) { fail++; }
+          try { await api('tRegrade', { id: todo[i].id }); } catch (e) { if (aiNotReady(e)) notReady = true; else fail++; }
         }
+        if (notReady) { $('#bmsg').textContent = AI_NOT_READY; $('#batch').disabled = false; return; }
         $('#bmsg').textContent = fail ? `완료 (실패 ${fail}건 — 카드에서 다시 눌러 보세요)` : '모두 완료!'; await new Promise(r => setTimeout(r, 1200)); view();
       };
     }
   } catch (e) { if (e.message === 'bad_password') login(); else $('#body').textContent = '오류: ' + e.message; }
 }
 // 학생이 쓴 영어 순서 뜻(직독직해)과 단어 뜻
-function chunksOf(raw) {
-  if (raw.includes('/')) return raw.split('/').map(c => c.trim()).filter(Boolean);
-  const w = raw.split(/\s+/), out = []; let i = 0;
-  while (i < w.length) { const left = w.length - i, n = left === 4 ? 2 : left <= 3 ? left : 3; out.push(w.slice(i, i + n).join(' ')); i += n; }
-  return out;
-}
-// 문장 전체의 영어 순서 뜻 (예전 덩어리별 기록이 있으면 이어 붙임)
-const sentMean = (s, i) => (s.sentMeans || {})[i] || chunksOf((s.sentences || [])[i] || '').map((_, j) => (s.chunkMeans || {})[i + '_' + j]).filter(Boolean).join(' / ');
+// 문장 표시에는 슬래시를 쓰지 않는다
+const plainS = raw => String(raw).replace(/\//g, ' ').replace(/\s+/g, ' ').trim();
+// 문장 전체의 영어 순서 뜻
+const sentMean = (s, i) => (s.sentMeans || {})[i] || '';
 // 학생 상세: 직독직해 + 선생님 모범(입력하면 학생 '내 기록 보기'에 나란히 공개), 단어, 복습 결과
 function detail(name, d, models = {}) {
   if (!d || !d.sessions) return '<div class="card">데이터가 없어요.</div>';
   return `<div class="card"><h3>${esc(name)}</h3>${d.sessions.slice().reverse().map(s => { const mm = models[s.n] || {}; return `<h4>${s.n}회차 · ${esc(s.date)}</h4>
-    ${(s.sentences || []).map((sent, i) => `<div class="cor"><b>${esc(chunksOf(sent).join(' / '))}</b><div class="muted">학생: ${esc(sentMean(s, i) || '—')}</div>
+    ${(s.sentences || []).map((sent, i) => `<div class="cor"><b>${esc(plainS(sent))}</b><div class="muted">학생: ${esc(sentMean(s, i) || '—')}</div>
       <input data-m="${s.n}" data-k="${i}" value="${esc(mm[i] || '')}" placeholder="모범 뜻 (영어 순서대로)" style="padding:6px;margin-top:4px"></div>`).join('')}
     ${(s.sentences || []).length ? `<button class="sec" data-sm="${s.n}">모범 직독직해 저장 (학생에게 공개)</button>` : ''}
     ${(s.unknown || []).length ? `<p><b>모르는 단어</b> ${(s.unknown).map(u => `${esc(u.word)} <span class="muted">(짐작: ${esc(u.guess || '—')} → 찾은 뜻: ${esc(u.myMeaning || '—')}${u.rv ? ` · 복습 ✅${u.rv.ok} ❌${u.rv.no}` : ''})</span>`).join(', ')}</p>` : ''}`; }).join('')}</div>`;
@@ -140,7 +141,7 @@ async function viewReport() {
     <div class="row" style="margin-top:8px">
     <label><input type="checkbox" id="o1" checked style="width:auto"> 직독직해</label>
     <label><input type="checkbox" id="o2" checked style="width:auto"> 단어·복습</label>
-    <label><input type="checkbox" id="o3" checked style="width:auto"> 영작·첨삭</label>
+    <label><input type="checkbox" id="o3" checked style="width:auto"> 단어·장문 영작·첨삭</label>
     <button id="rprint">🖨 인쇄 / PDF 저장</button></div>
     <p class="muted">인쇄 창에서 프린터를 <b>'PDF로 저장'</b>으로 고르면 파일로 저장돼요. 첨삭은 <b>승인한 것만</b> 나가고, 승인 전 AI 초안은 포함되지 않아요. 기간은 학생이 회차를 시작한 날짜 기준이에요.</p></div><div id="rpt"></div>`;
   const range = () => {
@@ -172,11 +173,11 @@ async function viewReport() {
       ${c.miss.length ? `<p class="keep"><b>자주 놓친 단어</b> ${esc(c.miss.join(', '))}</p>` : ''}${sess.length ? '' : '<p class="muted">이 기간에 학습 기록이 없어요.</p>'}`;
     sess.slice().reverse().forEach(ss => {
       h += `<div class="rbar">▶ ${ss.n}회차 · ${esc(ss.date || '')}</div>`;
-      if (o1 && (ss.sentences || []).length) h += (ss.sentences).map((sent, i) => `<div class="keep" style="margin-bottom:6px"><b>${esc(chunksOf(sent).join(' / '))}</b><br><span class="m">학생: ${esc(sentMean(ss, i) || '—')}</span>${(mm[ss.n] || {})[i] ? `<br><span class="t">모범: ${esc(mm[ss.n][i])}</span>` : ''}</div>`).join('');
+      if (o1 && (ss.sentences || []).length) h += (ss.sentences).map((sent, i) => `<div class="keep" style="margin-bottom:6px"><b>${esc(plainS(sent))}</b><br><span class="m">학생: ${esc(sentMean(ss, i) || '—')}</span>${(mm[ss.n] || {})[i] ? `<br><span class="t">모범: ${esc(mm[ss.n][i])}</span>` : ''}</div>`).join('');
       if (o2 && (ss.unknown || []).length) h += `<table class="rt keep" style="margin-top:6px"><tr><th>단어</th><th>짐작한 뜻</th><th>찾은 뜻</th><th>복습</th></tr>${ss.unknown.map(u => `<tr><td><b>${esc(u.word)}</b></td><td>${esc(u.guess || '—')}</td><td>${esc(u.myMeaning || '—')}</td><td>${u.rv ? `✅${u.rv.ok} ❌${u.rv.no}` : '—'}</td></tr>`).join('')}</table>`;
       if (o3) mine.filter(e => String(e.sessionNo) === String(ss.n)).forEach(e => {
         const fb = e.status === 'approved' ? e.final : null;
-        h += `<div class="keep" style="margin-top:8px"><b>${e.kind === 'words' ? '단어 영작' : '영작문'}</b> ${fb ? '' : '<span class="muted">(첨삭 대기 중)</span>'}
+        h += `<div class="keep" style="margin-top:8px"><b>${e.kind === 'words' ? '단어 영작' : esc(e.prompt || '장문 영작')}</b> ${fb ? '' : '<span class="muted">(첨삭 대기 중)</span>'}
           <div style="white-space:pre-wrap;background:#faf8fd;padding:6px 8px;border-radius:6px;font-size:13px">${esc(e.text)}</div>
           ${fb ? `${(fb.corrections || []).map(x => `<div style="font-size:13px;margin:4px 0"><span style="background:#f7d9d5">${esc(x.original)}</span> → <span style="background:#d8f0e2">${esc(x.corrected)}</span><br><span class="muted">${esc(x.reason)}</span></div>`).join('')}
             ${fb.praise ? `<div style="font-size:13px">👍 ${esc(fb.praise)}</div>` : ''}${fb.comment ? `<div style="font-size:13px">💬 ${esc(fb.comment)}</div>` : ''}` : ''}
@@ -196,7 +197,7 @@ function corRow(c = {}) {
 function card(e) {
   const fb = e.final || e.ai || {};
   const hasAi = !!(e.ai && (e.ai.corrections || e.ai.error));
-  return `<div class="card" data-id="${e.id}"><div class="row" style="justify-content:space-between"><b>${esc(e.name)} · ${e.sessionNo}회차 · ${e.kind === 'words' ? '단어 영작' : '영작문'}</b>
+  return `<div class="card" data-id="${e.id}"><div class="row" style="justify-content:space-between"><b>${esc(e.name)} · ${e.sessionNo}회차 · ${e.kind === 'words' ? '단어 영작' : esc(e.prompt || '장문 영작')}</b>
     <span class="tag ${e.status === 'approved' ? 'ok' : ''}">${e.status === 'approved' ? '승인됨' : '대기'}${e.revised && e.revised.length ? ' · 학생 고쳐쓰기 완료' : ''}</span></div>
     <p class="muted">${esc(e.prompt)}</p><div class="essay">${esc(e.text)}</div>
     ${fb.error ? `<p style="color:#c0392b">AI 첨삭 실패: ${esc(fb.error)} (AI 재첨삭을 눌러 보세요)</p>` : ''}
@@ -219,8 +220,8 @@ function bind() {
       const b = ev.target;
       if (b.dataset.del !== undefined) b.closest('.cor').remove();
       if (b.dataset.add !== undefined) el.querySelector('.cors').insertAdjacentHTML('beforeend', corRow());
-      if (b.dataset.ok !== undefined) { msg('저장 중...'); try { await api('tApprove', { id, final: collect(el) }); msg('✅ 승인됨'); } catch (e) { msg('실패: ' + e.message); } }
-      if (b.dataset.re !== undefined) { msg('AI 재첨삭 중...'); try { const r = await api('tRegrade', { id }); const e = essays.find(x => x.id === id); e.ai = r.ai; e.final = null; el.outerHTML = card(e); bind(); } catch (e) { msg('실패: ' + e.message); } }
+      if (b.dataset.ok !== undefined) { msg('저장 중...'); try { await api('tApprove', { id, final: collect(el) }); msg('✅ 승인됨'); } catch (e) { msg(aiNotReady(e) ? AI_NOT_READY : '실패: ' + e.message); } }
+      if (b.dataset.re !== undefined) { msg('AI 재첨삭 중...'); try { const r = await api('tRegrade', { id }); const e = essays.find(x => x.id === id); e.ai = r.ai; e.final = null; el.outerHTML = card(e); bind(); } catch (e) { msg(aiNotReady(e) ? AI_NOT_READY : '실패: ' + e.message); } }
     };
   });
 }
