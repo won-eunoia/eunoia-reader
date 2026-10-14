@@ -35,7 +35,7 @@ textarea{min-height:110px}
 </style>
 </head>
 <body>
-<header><div><b>EUNOIA</b> 원서 워크북</div><div class="muted" style="color:#fff;text-align:right"><span id="who"></span><br><span id="sv" style="font-size:12px"></span></div></header>
+<header><div><b>EUNOIA</b> 원서 워크북</div><div class="muted" style="color:#fff;text-align:right"><button id="vbtn" class="sec" style="padding:3px 9px;font-size:12px;margin-bottom:2px">🔊 소리 설정</button><br><span id="who"></span><br><span id="sv" style="font-size:12px"></span></div></header>
 <main id="app"></main>
 
 <script>
@@ -88,15 +88,60 @@ async function flush() {
 }
 document.addEventListener('visibilitychange', () => { if (document.hidden && S.name) flush(); });
 
-/* ---------- TTS (CLAUDE.md §4-4의 교훈 반영) ---------- */
-let voice = null;
-function pickVoice() { const v = speechSynthesis.getVoices(); voice = v.find(x => /en[-_]US/i.test(x.lang) && /female|samantha|google|zira|aria/i.test(x.name)) || v.find(x => /^en/i.test(x.lang)) || null; }
-if ('speechSynthesis' in window) { pickVoice(); speechSynthesis.onvoiceschanged = pickVoice; }
+/* ---------- TTS: 영어 음성을 직접 골라서 쓴다 (한국어 음성이 영어를 읽어 한국식 발음이 나는 문제 방지) ---------- */
+// CLAUDE.md §4-4의 교훈 유지: 첫 재생 전 무음 잠금 해제, 소리 겹침 시 cancel 후 120ms 지연, 음성 목록 지연 로딩 대비
+let voice = null, enVoices = [], vWarned = false, chosenName = null, chosenRate = null; // chosen*: 브라우저 저장소가 막혀도 이번 화면에서는 선택 유지
+const voiceRank = v => {
+  const n = v.name; let s = /en[-_]US/i.test(v.lang) ? 5 : 0;
+  if (/natural|online/i.test(n)) s += 100;                                       // 엣지의 Microsoft ... Online (Natural)
+  else if (/google us english/i.test(n)) s += 90;                               // 크롬의 Google US English
+  else if (/aria|jenny|samantha|ava|allison|siri|nicky/i.test(n)) s += 80;
+  else if (/google/i.test(n)) s += 60;
+  else if (/zira|mark|david/i.test(n)) s += 40;                                 // 윈도우 기본(기계음 느낌)
+  return s;
+};
+function loadVoices() {
+  if (!('speechSynthesis' in window)) return;
+  enVoices = speechSynthesis.getVoices().filter(v => /^en/i.test(v.lang)).sort((a, b) => voiceRank(b) - voiceRank(a));
+  const saved = chosenName || lsGet('wb_voice');
+  voice = enVoices.find(v => v.name === saved) || enVoices[0] || null;  // 영어 음성이 없으면 null
+}
+if ('speechSynthesis' in window) {
+  loadVoices(); speechSynthesis.onvoiceschanged = loadVoices;
+  let n = 0; const iv = setInterval(() => { loadVoices(); if (++n > 16) clearInterval(iv); }, 300); // 크롬은 구글 음성을 늦게 불러옴
+}
+const rateScale = () => +(chosenRate || lsGet('wb_rate') || 1);
 function unlockAudio() { try { const u = new SpeechSynthesisUtterance(' '); u.volume = 0.01; speechSynthesis.speak(u); } catch (e) {} }
 function speak(text, rate = 0.9) {
   if (!('speechSynthesis' in window)) return;
-  const go = () => { const u = new SpeechSynthesisUtterance(text); u.lang = 'en-US'; u.rate = rate; if (voice) u.voice = voice; speechSynthesis.speak(u); };
+  loadVoices();
+  if (!voice && !vWarned) { vWarned = true; voicePanel(); }   // 영어 음성이 없으면 처음 한 번 안내를 띄운다
+  const go = () => { const u = new SpeechSynthesisUtterance(text); u.lang = voice ? voice.lang : 'en-US'; u.rate = rate * rateScale(); if (voice) u.voice = voice; speechSynthesis.speak(u); };
   if (speechSynthesis.speaking || speechSynthesis.pending) { speechSynthesis.cancel(); setTimeout(go, 120); } else go();
+}
+function voicePanel() {
+  const old = $('#vp'); if (old) { old.remove(); return; }
+  loadVoices();
+  const p = document.createElement('div'); p.id = 'vp';
+  p.style.cssText = 'position:fixed;top:58px;left:8px;right:8px;max-width:440px;margin-left:auto;background:#fff;border-radius:12px;box-shadow:0 4px 18px #0005;padding:14px;z-index:9;color:#2b2338';
+  const sel = enVoices.length
+    ? `<select id="vsel" style="width:100%;padding:8px;border-radius:8px;border:1px solid #cfc5e0">${enVoices.map(v => `<option value="${esc(v.name)}" ${voice && v.name === voice.name ? 'selected' : ''}>${esc(v.name)} (${esc(v.lang)}${v.localService ? '' : ' · 인터넷'})${voiceRank(v) >= 90 ? ' ⭐' : ''}</option>`).join('')}</select>`
+    : `<div class="bad" style="margin:8px 0"><b>이 기기에는 영어 음성이 없어요.</b> 그래서 한국어 음성이 영어를 읽어서 발음이 한국식으로 들려요.</div>`;
+  p.innerHTML = `<div class="row" style="justify-content:space-between"><b>🔊 소리 설정</b><button class="sec" id="vx" style="padding:4px 10px">닫기</button></div>
+    ${sel}
+    <div class="row" style="margin-top:8px"><span class="muted">속도</span>
+      <select id="vrate" style="padding:6px;border-radius:8px;border:1px solid #cfc5e0"><option value="0.8">느리게</option><option value="1">보통</option><option value="1.15">빠르게</option></select>
+      <button id="vtest" ${enVoices.length ? '' : 'disabled'}>▶ 들어보기</button></div>
+    <p class="muted" style="margin:10px 0 0;line-height:1.5">⭐ 표시가 있는 음성이 자연스러워요.<br>
+    · <b>크롬</b>: 인터넷에 연결돼 있으면 <b>Google US English</b>가 나와요.<br>
+    · <b>엣지</b>: <b>Microsoft … Online (Natural)</b> 음성이 가장 자연스러워요.<br>
+    · 영어 음성이 없으면 윈도우 <b>설정 → 시간 및 언어 → 언어 및 지역 → 언어 추가 → English (United States)</b>를 추가한 뒤(음성 옵션 체크) 브라우저를 다시 켜 주세요.</p>`;
+  document.body.appendChild(p);
+  $('#vrate').value = String(rateScale());
+  $('#vx').onclick = () => p.remove();
+  $('#vrate').onchange = e => { chosenRate = e.target.value; lsSet('wb_rate', chosenRate); };
+  if (enVoices.length) $('#vsel').onchange = e => { chosenName = e.target.value; lsSet('wb_voice', chosenName); loadVoices(); };
+  $('#vtest').onclick = () => speak('She smiled warmly at him, and the door slowly opened.', 0.9);
 }
 
 /* ---------- 로그인 / 홈 ---------- */
@@ -420,6 +465,7 @@ function renderRevise(items, done, inSession) {
   };
 }
 
+$("#vbtn").onclick = voicePanel;
 viewLogin();
 </script>
 </body>
