@@ -279,21 +279,42 @@ function recordReview(it, ok) {
 }
 function stReview() {
   const R = cur.review;
-  $('#step').innerHTML = `<div class="card"><h2>복습 · 지난번 단어</h2><p class="muted">지난 회차에서 모르는 단어였던 것들이에요. 뜻이 기억나는지 먼저 써 보고, 정답을 확인하세요.</p>
-    ${R.items.map((it, i) => { const r = R.results[i]; return `<div class="card" style="background:#faf8fd"><b style="font-size:18px">${esc(it.word)}</b> <button class="sec" data-s="${i}">🔊</button>
+  R.drafts = R.drafts || {}; R.shown = R.shown || {};
+  // 단어마다: ① 뜻을 먼저 쓴다(써야 '정답 확인'이 켜진다) → ② 정답 확인 → ③ ✅알았어요 / ❌몰랐어요 선택. 전부 하면 '다음 단계'가 켜진다.
+  const rvHtml = i => {
+    const it = R.items[i], r = R.results[i];
+    if (r) return `정답: <b>${esc(it.meaning)}</b> ${r.ok ? '<span class="good">✅ 알았어요</span>' : '<span class="bad">❌ 몰랐어요</span>'}`;
+    if (R.shown[i]) return `정답: <b>${esc(it.meaning)}</b><br>내가 쓴 답과 비교해서 골라 주세요: <button data-j="${i}:1">✅ 알았어요</button> <button class="sec" data-j="${i}:0">❌ 몰랐어요</button>`;
+    return `<button class="sec" data-show="${i}" ${(R.drafts[i] || '').trim() ? '' : 'disabled'}>정답 확인</button> <span class="muted" data-hint="${i}">${(R.drafts[i] || '').trim() ? '' : '먼저 뜻을 써 보세요'}</span>`;
+  };
+  const left = () => R.items.filter((_, i) => !R.results[i]).length;
+  $('#step').innerHTML = `<div class="card"><h2>복습 · 지난번 단어</h2><p class="muted">지난 회차에서 모르는 단어였던 것들이에요. <b>① 뜻을 써 보고 ② 정답 확인 ③ ✅/❌ 선택</b> — 모든 단어를 마치면 다음 단계 버튼이 켜져요.</p>
+    <div id="prog" class="muted" style="margin-bottom:6px"></div>
+    ${R.items.map((it, i) => `<div class="card" style="background:#faf8fd"><b style="font-size:18px">${esc(it.word)}</b> <button class="sec" data-s="${i}">🔊</button>
       <div class="muted">${esc(it.sentence)}</div>
-      <input type="text" data-i="${i}" value="${esc((r && r.guess) || (R.drafts || {})[i] || '')}" placeholder="뜻이 기억나요?" style="margin-top:6px" ${r ? 'disabled' : ''}>
-      <div id="rv${i}" style="margin-top:6px">${r ? `정답: <b>${esc(it.meaning)}</b> ${r.ok ? '<span class="good">✅ 알았어요</span>' : '<span class="bad">❌ 몰랐어요</span>'}`
-        : `<button class="sec" data-show="${i}">정답 확인</button>`}</div></div>`; }).join('')}${nextBtn(false)}</div>`;
-  const upd = () => $('#nx').disabled = !R.items.every((_, i) => R.results[i]);
-  $('#step').oninput = e => { const i = e.target.dataset.i; if (i != null) (R.drafts = R.drafts || {})[i] = e.target.value; };
+      <input type="text" data-i="${i}" value="${esc((R.results[i] && R.results[i].guess) || R.drafts[i] || '')}" placeholder="뜻이 기억나요?" style="margin-top:6px" ${R.results[i] ? 'disabled' : ''}>
+      <div id="rv${i}" style="margin-top:6px">${rvHtml(i)}</div></div>`).join('')}${nextBtn(false)}</div>`;
+  const upd = () => {
+    const n = left();
+    $('#nx').disabled = n > 0;
+    $('#nx').textContent = n > 0 ? `다음 단계 → (남은 단어 ${n}개)` : '다음 단계 →';
+    $('#prog').textContent = `${R.items.length - n} / ${R.items.length} 확인 완료`;
+  };
+  $('#step').oninput = e => {
+    const i = e.target.dataset.i; if (i == null) return;
+    R.drafts[i] = e.target.value;
+    const btn = document.querySelector(`[data-show="${i}"]`), hint = document.querySelector(`[data-hint="${i}"]`);   // 다시 그리지 않고 버튼만 켠다 (입력 중 커서 유지)
+    if (btn) btn.disabled = !e.target.value.trim();
+    if (hint) hint.textContent = e.target.value.trim() ? '' : '먼저 뜻을 써 보세요';
+  };
   $('#step').onclick = e => {
     const b = e.target;
     if (b.dataset.s != null) speak(R.items[b.dataset.s].word, .8);
-    if (b.dataset.show != null) { const i = +b.dataset.show; $('#rv' + i).innerHTML = `정답: <b>${esc(R.items[i].meaning)}</b> <button data-j="${i}:1">✅ 알았어요</button> <button class="sec" data-j="${i}:0">❌ 몰랐어요</button>`; }
+    if (b.dataset.show != null) { const i = +b.dataset.show; if (!(R.drafts[i] || '').trim()) return; R.shown[i] = true; $('#rv' + i).innerHTML = rvHtml(i); }
     if (b.dataset.j) {
       const [i, ok] = b.dataset.j.split(':').map(Number); const guess = $(`input[data-i="${i}"]`).value;
-      R.results[i] = { guess, ok: !!ok }; recordReview(R.items[i], !!ok); save(); stReview();
+      R.results[i] = { guess, ok: !!ok }; recordReview(R.items[i], !!ok); save();
+      $('#rv' + i).innerHTML = rvHtml(i); $(`input[data-i="${i}"]`).disabled = true; upd();      // 이 단어만 갱신 — 다른 단어에서 열어 둔 정답 확인은 그대로 유지
     }
   };
   upd(); $('#nx').onclick = nextStep;
