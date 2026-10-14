@@ -174,6 +174,7 @@ function pendingFixes() { return essays.filter(e => e.status === 'approved' && e
 
 function viewHome() {
   cur = null; $('#who').textContent = (S.display || S.name) + ' ';
+  try { history.replaceState({ home: 1 }, ''); } catch (e) {}
   const fixes = pendingFixes();
   const n = S.sessions.length + 1;
   app.innerHTML = `<div class="card"><h2>안녕, ${esc(S.display || S.name)}!</h2>
@@ -205,11 +206,18 @@ function stepList() {
   return l;
 }
 const firstOpenStep = () => (stepList().find(([id]) => !cur.done[id]) || ['input'])[0];
-function go(id) {
-  stepId = id; save();
-  const list = stepList();
-  const bar = `<div class="steps">${list.map(([k, t]) => `<span class="${k === id ? 'on' : cur.done[k] ? 'done' : ''}">${t}</span>`).join('')}</div>`;
-  app.innerHTML = bar + '<div id="step"></div>';
+// dir: 1 = 앞으로, -1 = 뒤로 (자동으로 건너뛰는 단계에서 방향을 지키기 위해 필요). fromPop: 브라우저 뒤로/앞으로 가기로 온 경우
+let navDir = 1;
+function go(id, dir = 1, fromPop = false) {
+  navDir = dir; stepId = id; save();
+  if (!fromPop) { try { history.pushState({ step: id }, ''); } catch (e) {} } // 브라우저 뒤로가기가 한 단계씩 돌아가게
+  const list = stepList(), idx = list.findIndex(x => x[0] === id);
+  const chips = list.map(([k, t], j) => `<span class="${k === id ? 'on' : cur.done[k] ? 'done' : ''}" ${k !== id && (cur.done[k] || j < idx) ? `data-jump="${k}" style="cursor:pointer"` : ''}>${t}</span>`).join('');
+  app.innerHTML = `<div class="steps">${chips}</div><div style="margin-bottom:8px"><button class="sec" id="bk" style="padding:6px 12px">${idx > 0 ? '← 이전 단계' : '← 홈으로'}</button></div><div id="step"></div>`;
+  app.onclick = null;
+  $('#bk').onclick = prevStep;
+  app.querySelector('.steps').onclick = e => { const k = e.target.dataset.jump; if (k) go(k, list.findIndex(x => x[0] === k) < idx ? -1 : 1); };
+  window.scrollTo(0, 0);
   ({ review: stReview, input: stInput, listen: stListen, chunk: stChunk, scramble: stScramble, mark: stMark, write: stWrite, compose: stCompose, essay: stEssay, revise: stRevise })[id]();
 }
 function nextStep() {
@@ -217,6 +225,19 @@ function nextStep() {
   const l = stepList().map(x => x[0]); const i = l.indexOf(stepId);
   if (i + 1 < l.length) go(l[i + 1]); else { cur.finished = true; save(); app.innerHTML = '<div class="card"><h2>🎉 이번 회차 끝!</h2><button id="h">홈으로</button></div>'; $('#h').onclick = viewHome; }
 }
+function prevStep() {
+  if (!cur) return viewHome();
+  const l = stepList().map(x => x[0]), i = l.indexOf(stepId);
+  if (i > 0) go(l[i - 1], -1); else viewHome();
+}
+const skip = () => navDir < 0 ? prevStep() : nextStep(); // 할 게 없어서 건너뛰는 단계: 진행 방향대로 넘어간다
+window.addEventListener('popstate', e => {
+  const st = e.state;
+  if (cur && st && st.step && stepList().some(x => x[0] === st.step)) {
+    const l = stepList().map(x => x[0]);
+    go(st.step, l.indexOf(st.step) < l.indexOf(stepId) ? -1 : 1, true);
+  } else if (S.name) viewHome();
+});
 const nextBtn = (enabled = true, label = '다음 단계 →') => `<p><button id="nx" ${enabled ? '' : 'disabled'}>${label}</button></p>`;
 
 /* ---------- 0. 지난 회차 단어 복습 ---------- */
@@ -302,7 +323,7 @@ function stListen() {
       rec.onresult = ev => {
         const said = normS(ev.results[0][0].transcript).split(' '), want = normS(plain(cur.sentences[i])).split(' ');
         const hit = want.filter(w => said.includes(w)).length, pct = Math.round(hit / want.length * 100);
-        $('#r' + i).innerHTML = `내 발음 인식: "${esc(ev.results[0][0].transcript)}" → <b class="${pct >= 80 ? 'good' : 'bad'}">${pct}%</b>`;
+        $('#r' + i).innerHTML = `내 발음 인식: "${esc(ev.results[0][0].transcript)}" → <b class="${pct >= 65 ? 'good' : 'bad'}">${pct}%</b> ${pct >= 65 ? '👍 잘했어요!' : '다시 한 번 해볼까요?'}`;
       };
       rec.onerror = () => $('#r' + i).textContent = '인식하지 못했어요. 다시 눌러 보세요.';
       rec.start();
@@ -329,7 +350,7 @@ function stChunk() {
 /* ---------- 4. 어순 배열 (의미 단위) ---------- */
 function stScramble() {
   const list = cur.sentences.map(chunksOf).filter(c => c.length >= 2);
-  if (!list.length) return nextStep();
+  if (!list.length) return skip();
   let idx = 0;
   const show = () => {
     if (idx >= list.length) { $('#step').innerHTML = `<div class="card"><h2>👏 어순 배열 완료!</h2>${nextBtn()}</div>`; $('#nx').onclick = nextStep; return; }
@@ -384,12 +405,11 @@ function stMark() {
 
 /* ---------- 6. 찾은 뜻 쓰기 (두 번째 빈칸) ---------- */
 function stWrite() {
-  if (!cur.unknown.length) return nextStep();
-  $('#step').innerHTML = `<div class="card"><h2>3. 사전에서 찾은 뜻 쓰기</h2><p class="muted">사전이나 인터넷에서 찾아서, 이 문장에 맞는 뜻을 써 보세요. 내가 짐작한 뜻과 비교해 보세요.</p>
+  if (!cur.unknown.length) return skip();
+  $('#step').innerHTML = `<div class="card"><h2>3. 사전에서 찾은 뜻 쓰기</h2><p class="muted"><b>사전에서 찾은 뜻을 써 보세요.</b> 내가 짐작한 뜻과 비교해 보세요.</p>
     ${cur.unknown.map((u, i) => `<div class="card" style="background:#faf8fd"><b style="font-size:18px">${esc(u.word)}</b> <button class="sec" data-s="${i}">🔊</button>
-      <a href="https://en.dictionary.naver.com/#/search?query=${encodeURIComponent(u.word)}" target="_blank" rel="noopener"><button class="sec" type="button">🔎 사전</button></a>
       <div class="muted">${esc(u.sentence)}</div><div style="margin:6px 0">내가 짐작한 뜻: <b>${esc(u.guess || '—')}</b></div>
-      <input type="text" data-i="${i}" value="${esc(u.myMeaning || '')}" placeholder="찾은 뜻"></div>`).join('')}${nextBtn(false)}</div>`;
+      <input type="text" data-i="${i}" value="${esc(u.myMeaning || '')}" placeholder="사전에서 찾은 뜻"></div>`).join('')}${nextBtn(false)}</div>`;
   const upd = () => $('#nx').disabled = !cur.unknown.every(u => (u.myMeaning || '').trim());
   $('#step').oninput = e => { const i = e.target.dataset.i; if (i == null) return; cur.unknown[i].myMeaning = e.target.value; save(); upd(); };
   $('#step').onclick = e => { const s = e.target.dataset.s; if (s != null) speak(cur.unknown[s].word, .8); };
@@ -398,7 +418,7 @@ function stWrite() {
 
 /* ---------- 7. 단어로 영작 (학생은 입력만, 선생님이 AI로 첨삭) ---------- */
 function stCompose() {
-  if (!cur.unknown.length) return nextStep();
+  if (!cur.unknown.length) return skip();
   const ws = cur.wordSents;
   cur.unknown.forEach(u => { if (!ws.some(x => x.word === u.word)) ws.push({ word: u.word, text: '' }); });
   $('#step').innerHTML = `<div class="card"><h2>7. 새 단어로 영어 문장 만들기</h2><p class="muted">단어마다 나만의 문장을 써 보세요. 제출하면 선생님이 확인해요.</p>
